@@ -180,38 +180,22 @@ function buildThreatData(recs){
 
 function scoreSrc(ip,threatMap){
   const d=threatMap[ip];
-  if(!d)return{score:0,label:'—',cls:'ok',finding:'',ports:0,rejected:0,total:0,hrPorts:0,synOnly:0};
-  let score=0;
-  // Multiple ports = Recon:EC2/Portscan pattern
-  if(d.ports.size>=6)score+=40;else if(d.ports.size>=3)score+=20;
-  // AWS Config restricted ports targeted
-  if(d.hrPorts.size>=3)score+=25;else if(d.hrPorts.size>=1)score+=10;
-  // High reject ratio = Recon:EC2/PortProbeUnprotectedPort pattern
-  if(d.total>0&&d.rejected/d.total>0.8)score+=20;
-  // SYN-only without handshake = stealth scan
-  if(d.synOnly>0&&d.synOnly/d.total>0.7)score+=15;
-  score=Math.min(score,100);
-
-  // Labels based on observable data only
-  let label,cls,finding;
-  if(d.ports.size>=6&&d.rejected>0){
-    label='🔴 HIGH';cls='cr';
-    finding=d.ports.size+' ports targeted, '+d.rejected+' rejected';
-  }else if(d.ports.size>=3||d.hrPorts.size>=2){
-    label='🟠 MEDIUM';cls='wa';
-    finding=d.ports.size+' ports targeted'+(d.hrPorts.size?' ('+d.hrPorts.size+' restricted)':'');
-  }else if(d.rejected>0||d.hrPorts.size>=1){
-    label='🟡 LOW';cls='wa';
-    finding=d.rejected+' rejected'+(d.hrPorts.size?', '+d.hrPorts.size+' restricted port(s)':'');
-  }else{
-    label='🟢 INFO';cls='ok';finding='';
-  }
-
-  if(d.synOnly>0&&d.synOnly/d.total>0.7){
-    finding+=(finding?'; ':'')+Math.round(d.synOnly/d.total*100)+'% SYN-only (no handshake completed)';
-  }
-
-  return{score,label,cls,finding,ports:d.ports.size,rejected:d.rejected,total:d.total,hrPorts:d.hrPorts.size,synOnly:d.synOnly};
+  if(!d)return null;
+  const hasRestricted=d.hrPorts.size>0;
+  const restrictedList=[...d.hrPorts].map(p=>p+'/'+(HIGH_RISK_PORTS[p]||'')).join(', ');
+  const rejectPct=d.total?Math.round(d.rejected/d.total*100):0;
+  const synPct=d.total?Math.round(d.synOnly/d.total*100):0;
+  return{
+    ip,
+    ports:d.ports.size,
+    hrPorts:d.hrPorts.size,
+    restrictedList,
+    hasRestricted,
+    rejected:d.rejected,
+    total:d.total,
+    rejectPct,
+    synPct
+  };
 }
 
 // === RENDER ===
@@ -343,15 +327,23 @@ function eniTable(recs){
 function threatTable(recs){
   const threatMap=buildThreatData(recs);
   const pubSrcs=[...new Set(recs.filter(r=>!r._private).map(r=>r.srcaddr))];
-  const scored=pubSrcs.map(ip=>{const s=scoreSrc(ip,threatMap);return{ip,...s};}).filter(s=>s.score>=30).sort((a,b)=>b.score-a.score).slice(0,25);
-  if(!scored.length)return'';
-  let html=`<h2>🎯 Source IP Risk Analysis</h2>
-  <p class="sub">Scored based on observable data: distinct ports targeted, <a href="https://docs.aws.amazon.com/config/latest/developerguide/restricted-common-ports.html">AWS Config restricted ports</a> hit, reject ratio, and TCP handshake patterns. For deeper threat detection, enable <a href="https://docs.aws.amazon.com/guardduty/latest/ug/what-is-guardduty.html">Amazon GuardDuty</a>.</p>
-  <div class="tw"><table><thead><tr><th>Score</th><th>Severity</th><th>Source IP</th><th>Country</th><th>Org</th><th>Ports</th><th>Restricted</th><th>Flows</th><th>Rejected</th><th>Observations</th></tr></thead><tbody>`;
-  scored.forEach(s=>{
-    html+=`<tr><td><span class="t ${s.cls}">${s.score}</span></td><td><span class="t ${s.cls}">${s.label}</span></td>
+  const scored=pubSrcs.map(ip=>scoreSrc(ip,threatMap)).filter(s=>s&&(s.hrPorts>0||s.ports>=3||s.rejected>0));
+  // Sort: restricted ports first, then by total ports, then by rejected
+  scored.sort((a,b)=>b.hrPorts-a.hrPorts||b.ports-a.ports||b.rejected-a.rejected);
+  const top=scored.slice(0,30);
+  if(!top.length)return'';
+  let html=`<h2>🎯 Source IP Activity — <a href="https://docs.aws.amazon.com/config/latest/developerguide/restricted-common-ports.html">AWS Config Restricted Ports</a> Analysis</h2>
+  <p class="sub">IPs that targeted ports flagged by AWS Config <code>restricted-common-ports</code> rule (20, 21, 22, 23, 3389, 3306, etc.) or contacted 3+ distinct ports. Data only — no severity assigned. For threat detection, enable <a href="https://docs.aws.amazon.com/guardduty/latest/ug/what-is-guardduty.html">Amazon GuardDuty</a>.</p>
+  <div class="tw"><table><thead><tr><th>Source IP</th><th>Country</th><th>Org</th><th>Distinct Ports</th><th>Restricted Ports Hit</th><th>Flows</th><th>Rejected</th><th>Reject %</th><th>SYN-only %</th></tr></thead><tbody>`;
+  top.forEach(s=>{
+    const rCls=s.rejectPct>70?'cr':s.rejectPct>30?'wa':'ok';
+    html+=`<tr>
     <td><b>${s.ip}</b></td><td>${ipGeoCell(s.ip)}</td><td>${ipOrgCell(s.ip)}</td>
-    <td>${s.ports}</td><td>${s.hrPorts}</td><td>${s.total.toLocaleString()}</td><td>${s.rejected.toLocaleString()}</td><td style="font-size:.75em;white-space:normal;max-width:250px">${s.finding||'—'}</td></tr>`;
+    <td>${s.ports}</td>
+    <td>${s.hasRestricted?'<span class="t cr">'+s.restrictedList+'</span>':'—'}</td>
+    <td>${s.total.toLocaleString()}</td><td>${s.rejected.toLocaleString()}</td>
+    <td><span class="t ${rCls}">${s.rejectPct}%</span></td>
+    <td>${s.synPct?s.synPct+'%':'—'}</td></tr>`;
   });
   return html+'</tbody></table></div>';
 }
