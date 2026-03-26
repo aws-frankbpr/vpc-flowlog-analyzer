@@ -48,8 +48,8 @@ tr:hover{background:#f2f8fd}
   <div id="upload">
     <div class="drop" id="dropzone">
       <h2>Drop your VPC Flow Log file here</h2>
-      <p>or click to browse — supports default v2 and custom format (v2-v7) text files</p>
-      <input type="file" id="fileInput" accept=".txt,.log,.csv,.gz">
+      <p>or click to browse — supports default v2 and custom format (v2-v7), text or CSV files</p>
+      <input type="file" id="fileInput" accept=".txt,.log,.csv">
     </div>
     <div class="privacy">🔒 Your data never leaves your browser. All processing happens locally in JavaScript — no uploads, no servers, no tracking.</div>
   </div>
@@ -83,12 +83,17 @@ function processFile(file){
 }
 
 function detectFields(headerLine){
-  // Check if first line looks like a header (contains field names)
-  const parts=headerLine.trim().split(/\s+/);
-  if(parts.includes('version')||parts.includes('srcaddr')||parts.includes('account-id')){
-    return parts;
+  const line=headerLine.trim();
+  // CSV format (quoted, comma-separated)
+  if(line.startsWith('"')){
+    return line.replace(/"/g,'').split(',').map(f=>f.replace(/_/g,'-'));
   }
-  // No header — assume v2 default
+  const parts=line.split(/\s+/);
+  // Normalize underscores to hyphens
+  const norm=parts.map(f=>f.replace(/_/g,'-'));
+  if(norm.includes('version')||norm.includes('srcaddr')||norm.includes('account-id')){
+    return norm;
+  }
   if(parts.length===14) return V2_FIELDS;
   return null;
 }
@@ -100,13 +105,14 @@ function parseAndRender(text){
   const fields=detectFields(lines[0]);
   if(!fields){showError('Could not detect flow log format');return}
 
-  const hasHeader=fields!==V2_FIELDS||lines[0].includes('version');
+  const isCSV=lines[0].trim().startsWith('"');
+  const hasHeader=isCSV||fields!==V2_FIELDS||lines[0].includes('version');
   const dataLines=hasHeader?lines.slice(1):lines;
 
   // Parse records
   const records=[];
   for(const line of dataLines){
-    const parts=line.trim().split(/\s+/);
+    const parts=isCSV?line.replace(/"/g,'').split(','):line.trim().split(/\s+/);
     if(parts.length<fields.length) continue;
     const r={};
     fields.forEach((f,i)=>r[f]=parts[i]);
