@@ -103,7 +103,13 @@ async function resolveOneIP(ip){
 async function resolveIP(ip,btnId){
   const btn=document.getElementById(btnId);
   if(btn)btn.textContent='⏳';
-  await resolveOneIP(ip);
+  if(!geoCache[ip]){
+    try{
+      const r=await fetch('https://freeipapi.com/api/json/'+ip);
+      const d=await r.json();
+      if(d.countryCode)geoCache[ip]={country:d.countryName||'Unknown',cc:d.countryCode||'??',org:d.regionName||'Unknown'};
+    }catch(e){if(btn)btn.textContent='❌';}
+  }
   render();
 }
 // Resolve all public IPs — uses ip-api.com batch (100/req) via corsproxy
@@ -167,9 +173,10 @@ function buildThreatData(recs){
   const map={};
   recs.forEach(r=>{
     const ip=r.srcaddr;
-    if(!map[ip])map[ip]={ports:new Set(),rejected:0,total:0,hrPorts:new Set(),synOnly:0};
+    if(!map[ip])map[ip]={ports:new Set(),portCounts:{},rejected:0,total:0,hrPorts:new Set(),synOnly:0};
     const d=map[ip];
     d.ports.add(r._dstport);
+    d.portCounts[r._dstport]=(d.portCounts[r._dstport]||0)+1;
     d.total++;
     if(r.action==='REJECT')d.rejected++;
     if(HIGH_RISK_PORTS[r._dstport])d.hrPorts.add(r._dstport);
@@ -185,17 +192,8 @@ function scoreSrc(ip,threatMap){
   const restrictedList=[...d.hrPorts].map(p=>p+'/'+(HIGH_RISK_PORTS[p]||'')).join(', ');
   const rejectPct=d.total?Math.round(d.rejected/d.total*100):0;
   const synPct=d.total?Math.round(d.synOnly/d.total*100):0;
-  return{
-    ip,
-    ports:d.ports.size,
-    hrPorts:d.hrPorts.size,
-    restrictedList,
-    hasRestricted,
-    rejected:d.rejected,
-    total:d.total,
-    rejectPct,
-    synPct
-  };
+  const topPorts=Object.entries(d.portCounts).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([p])=>PORTS[p]?p+'/'+PORTS[p]:p).join(', ');
+  return{ip,ports:d.ports.size,hrPorts:d.hrPorts.size,restrictedList,hasRestricted,rejected:d.rejected,total:d.total,rejectPct,synPct,topPorts};
 }
 
 // === RENDER ===
@@ -334,12 +332,13 @@ function threatTable(recs){
   if(!top.length)return'';
   let html=`<h2>🎯 Source IP Activity — <a href="https://docs.aws.amazon.com/config/latest/developerguide/restricted-common-ports.html">AWS Config Restricted Ports</a> Analysis</h2>
   <p class="sub">IPs that targeted ports flagged by AWS Config <code>restricted-common-ports</code> rule (20, 21, 22, 23, 3389, 3306, etc.) or contacted 3+ distinct ports. Data only — no severity assigned. For threat detection, enable <a href="https://docs.aws.amazon.com/guardduty/latest/ug/what-is-guardduty.html">Amazon GuardDuty</a>.</p>
-  <div class="tw"><table><thead><tr><th>Source IP</th><th>Country</th><th>Org</th><th>Distinct Ports</th><th>Restricted Ports Hit</th><th>Flows</th><th>Rejected</th><th>Reject %</th><th>SYN-only %</th></tr></thead><tbody>`;
+  <div class="tw"><table><thead><tr><th>Source IP</th><th>Country</th><th>Org</th><th>Total Dest Ports</th><th>Top 5 Ports</th><th>Restricted Ports Hit</th><th>Flows</th><th>Rejected</th><th>Reject %</th><th>SYN-only %</th></tr></thead><tbody>`;
   top.forEach(s=>{
     const rCls=s.rejectPct>70?'cr':s.rejectPct>30?'wa':'ok';
     html+=`<tr>
     <td><b>${s.ip}</b></td><td>${ipGeoCell(s.ip)}</td><td>${ipOrgCell(s.ip)}</td>
-    <td>${s.ports}</td>
+    <td>${s.ports.toLocaleString()}</td>
+    <td style="font-size:.75em;white-space:normal;max-width:200px">${s.topPorts}</td>
     <td>${s.hasRestricted?'<span class="t cr">'+s.restrictedList+'</span>':'—'}</td>
     <td>${s.total.toLocaleString()}</td><td>${s.rejected.toLocaleString()}</td>
     <td><span class="t ${rCls}">${s.rejectPct}%</span></td>
