@@ -78,7 +78,14 @@ function parseAndRender(text){
   if(!allRecords.length){showError('No valid flow records found');return}
   // Collect unique public IPs for GeoIP (both src and dst)
   const pubIPs=[...new Set(allRecords.flatMap(r=>[r.srcaddr,r.dstaddr]).filter(ip=>!isPrivate(ip)))];
-  lookupGeo(pubIPs).then(()=>render());
+  // Show results immediately, then enrich with GeoIP
+  render();
+  if(pubIPs.length>0){
+    document.getElementById('loading').innerHTML=`⏳ Enriching ${pubIPs.length} IPs with GeoIP... <button onclick="skipGeo()" style="margin-left:12px;padding:4px 12px;background:#5f6b7a;color:#fff;border:none;border-radius:4px;cursor:pointer">Skip GeoIP</button>`;
+    document.getElementById('loading').classList.add('show');
+    window._skipGeo=false;
+    lookupGeo(pubIPs).then(()=>{if(!window._skipGeo)render();});
+  }
 }
 
 function showError(msg){
@@ -86,25 +93,36 @@ function showError(msg){
   document.getElementById('results').style.display='block';
   document.getElementById('results').innerHTML=`<div class="card" style="border-left-color:#d13212"><b>Error:</b> ${msg}</div>`;
 }
+function skipGeo(){window._skipGeo=true;document.getElementById('loading').classList.remove('show');}
 
-// === GEOIP LOOKUP (ipwho.is — free, HTTPS, no key) ===
+// === GEOIP LOOKUP (ip-api.com batch via HTTP — 100 IPs per request) ===
 async function lookupGeo(ips){
   document.getElementById('loading').innerHTML='⏳ Looking up GeoIP for '+ips.length+' public IPs...';
+  // ip-api.com batch: 100 per request, 15 req/min on free tier (HTTP only)
+  // Try batch first, fallback to ipwho.is for remaining
+  const batches=[];
+  for(let i=0;i<ips.length;i+=100)batches.push(ips.slice(i,i+100));
   let done=0;
-  // ipwho.is has no batch endpoint, but allows 10k/month free. Use parallel with throttle.
-  const chunks=[];
-  for(let i=0;i<ips.length;i+=10)chunks.push(ips.slice(i,i+10));
-  for(const chunk of chunks){
-    await Promise.all(chunk.map(async ip=>{
-      try{
-        const r=await fetch('https://ipwho.is/'+ip);
-        const d=await r.json();
-        if(d.success!==false)geoCache[ip]={country:d.country||'Unknown',cc:d.country_code||'??',org:d.connection?.org||d.connection?.isp||'Unknown'};
-      }catch(e){}
-      done++;
-      if(done%50===0)document.getElementById('loading').innerHTML='⏳ GeoIP: '+done+'/'+ips.length+' IPs resolved...';
-    }));
-    await new Promise(r=>setTimeout(r,200));
+  for(const batch of batches){
+    try{
+      const resp=await fetch('http://ip-api.com/batch?fields=status,query,country,countryCode,org,isp',{
+        method:'POST',body:JSON.stringify(batch)
+      });
+      const data=await resp.json();
+      data.forEach(d=>{if(d.status==='success')geoCache[d.query]={country:d.country,cc:d.countryCode,org:d.org||d.isp||'Unknown'};});
+    }catch(e){
+      // HTTP blocked on HTTPS page — fallback: resolve in parallel via ipwho.is
+      await Promise.all(batch.map(async ip=>{
+        try{
+          const r=await fetch('https://ipwho.is/'+ip);
+          const d=await r.json();
+          if(d.success!==false)geoCache[ip]={country:d.country||'Unknown',cc:d.country_code||'??',org:d.connection?.org||d.connection?.isp||'Unknown'};
+        }catch(e2){}
+      }));
+    }
+    done+=batch.length;
+    document.getElementById('loading').innerHTML='⏳ GeoIP: '+done+'/'+ips.length+' IPs...';
+    if(batches.length>15)await new Promise(r=>setTimeout(r,4200)); // rate limit
   }
 }
 
