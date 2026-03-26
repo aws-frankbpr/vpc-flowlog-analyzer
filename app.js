@@ -5,7 +5,7 @@ const HIGH_RISK=[22,23,135,137,445,1433,3306,3389,5432,5900,6379,27017];
 const V2_FIELDS=['version','account-id','interface-id','srcaddr','dstaddr','srcport','dstport','protocol','packets','bytes','start','end','action','log-status'];
 const RFC1918=[{s:0x0A000000,m:0xFF000000},{s:0xAC100000,m:0xFFF00000},{s:0xC0A80000,m:0xFFFF0000}];
 
-let allRecords=[], geoCache={}, currentFilter={action:'all',protocol:'all',search:''};
+let allRecords=[], geoCache={}, currentFilter={action:'all',protocol:'all',search:'',eni:'all'};
 
 // === HELPERS ===
 function isPrivate(ip){
@@ -95,34 +95,24 @@ function showError(msg){
 }
 function skipGeo(){window._skipGeo=true;document.getElementById('loading').classList.remove('show');}
 
-// === GEOIP LOOKUP (ip-api.com batch via HTTP — 100 IPs per request) ===
+// === GEOIP LOOKUP (ipwho.is HTTPS, 50 parallel) ===
 async function lookupGeo(ips){
-  document.getElementById('loading').innerHTML='⏳ Looking up GeoIP for '+ips.length+' public IPs...';
-  // ip-api.com batch: 100 per request, 15 req/min on free tier (HTTP only)
-  // Try batch first, fallback to ipwho.is for remaining
-  const batches=[];
-  for(let i=0;i<ips.length;i+=100)batches.push(ips.slice(i,i+100));
+  if(window._skipGeo)return;
   let done=0;
-  for(const batch of batches){
-    try{
-      const resp=await fetch('http://ip-api.com/batch?fields=status,query,country,countryCode,org,isp',{
-        method:'POST',body:JSON.stringify(batch)
-      });
-      const data=await resp.json();
-      data.forEach(d=>{if(d.status==='success')geoCache[d.query]={country:d.country,cc:d.countryCode,org:d.org||d.isp||'Unknown'};});
-    }catch(e){
-      // HTTP blocked on HTTPS page — fallback: resolve in parallel via ipwho.is
-      await Promise.all(batch.map(async ip=>{
-        try{
-          const r=await fetch('https://ipwho.is/'+ip);
-          const d=await r.json();
-          if(d.success!==false)geoCache[ip]={country:d.country||'Unknown',cc:d.country_code||'??',org:d.connection?.org||d.connection?.isp||'Unknown'};
-        }catch(e2){}
-      }));
-    }
-    done+=batch.length;
-    document.getElementById('loading').innerHTML='⏳ GeoIP: '+done+'/'+ips.length+' IPs...';
-    if(batches.length>15)await new Promise(r=>setTimeout(r,4200)); // rate limit
+  const chunks=[];
+  for(let i=0;i<ips.length;i+=50)chunks.push(ips.slice(i,i+50));
+  for(const chunk of chunks){
+    if(window._skipGeo)return;
+    await Promise.all(chunk.map(async ip=>{
+      try{
+        const r=await fetch('https://ipwho.is/'+ip);
+        const d=await r.json();
+        if(d.success!==false)geoCache[ip]={country:d.country||'Unknown',cc:d.country_code||'??',org:d.connection?.org||d.connection?.isp||'Unknown'};
+      }catch(e){}
+    }));
+    done+=chunk.length;
+    document.getElementById('loading').innerHTML=`⏳ GeoIP: ${done}/${ips.length} IPs... <button onclick="skipGeo()" style="margin-left:12px;padding:4px 12px;background:#5f6b7a;color:#fff;border:none;border-radius:4px;cursor:pointer">Skip & use what we have</button>`;
+    await new Promise(r=>setTimeout(r,100));
   }
 }
 
@@ -180,6 +170,10 @@ function render(){
   const accounts=[...new Set(recs.map(r=>r['account-id']).filter(Boolean).filter(v=>v!=='-'))];
   const privateIPs=[...new Set(recs.flatMap(r=>[r.srcaddr,r.dstaddr]).filter(ip=>isPrivate(ip)&&ip!=='0.0.0.0'))];
 
+  // ENI filter options
+  const eniList=[...new Set(recs.map(r=>r['interface-id']).filter(v=>v&&v!=='-'))];
+  const eniOpts=eniList.map(e=>`<option value="${e}">${e}</option>`).join('');
+
   let html=`
   <div class="card" style="border-left-color:#0972d3">
     <b>${allRecords.length.toLocaleString()}</b> records parsed | Showing: <b>${total.toLocaleString()}</b> | Period: ${timeRange}<br>
@@ -189,6 +183,7 @@ function render(){
   <div class="filters" id="filterBar">
     <label>Action:</label><select id="fAction"><option value="all">All</option><option value="ACCEPT">Accept</option><option value="REJECT">Reject</option></select>
     <label>Protocol:</label><select id="fProto"><option value="all">All</option><option value="6">TCP</option><option value="17">UDP</option><option value="1">ICMP</option></select>
+    <label>ENI:</label><select id="fEni"><option value="all">All ENIs</option>${eniOpts}</select>
     <label>Search IP:</label><input id="fSearch" placeholder="e.g. 10.0.1.">
     <button onclick="applyAndRender()">Apply</button>
     <button onclick="resetFilters()" style="background:#5f6b7a">Reset</button>
@@ -202,6 +197,7 @@ function render(){
     <div class="s wa"><div class="n">${countries}</div><div class="l">🌍 Countries</div></div>
     <div class="s in"><div class="n">${formatBytes(totalBytes)}</div><div class="l">Traffic</div></div>
   </div>`;
+  html+=eniTable(recs);
   html+=threatTable(recs);
   html+=geoTable(recs);
   html+=topDestPorts(recs);
@@ -214,6 +210,7 @@ function render(){
   // Restore filter values
   document.getElementById('fAction').value=currentFilter.action;
   document.getElementById('fProto').value=currentFilter.protocol;
+  document.getElementById('fEni').value=currentFilter.eni;
   document.getElementById('fSearch').value=currentFilter.search;
 }
 
@@ -221,6 +218,7 @@ function applyFilters(){
   return allRecords.filter(r=>{
     if(currentFilter.action!=='all'&&r.action!==currentFilter.action)return false;
     if(currentFilter.protocol!=='all'&&r._protocol!==parseInt(currentFilter.protocol))return false;
+    if(currentFilter.eni!=='all'&&r['interface-id']!==currentFilter.eni)return false;
     if(currentFilter.search&&!r.srcaddr.includes(currentFilter.search)&&!r.dstaddr.includes(currentFilter.search))return false;
     return true;
   });
@@ -228,10 +226,48 @@ function applyFilters(){
 function applyAndRender(){
   currentFilter.action=document.getElementById('fAction').value;
   currentFilter.protocol=document.getElementById('fProto').value;
+  currentFilter.eni=document.getElementById('fEni').value;
   currentFilter.search=document.getElementById('fSearch').value;
   render();
 }
-function resetFilters(){currentFilter={action:'all',protocol:'all',search:''};render();}
+function resetFilters(){currentFilter={action:'all',protocol:'all',search:'',eni:'all'};render();}
+
+// === ENI BREAKDOWN ===
+function eniTable(recs){
+  const map={};
+  recs.forEach(r=>{
+    const eni=r['interface-id']||'unknown';
+    if(eni==='-')return;
+    if(!map[eni])map[eni]={inAccept:0,inReject:0,outAccept:0,outReject:0,bytesIn:0,bytesOut:0,srcIPs:new Set(),dstIPs:new Set(),privateIPs:new Set(),subnet:r['subnet-id']||'-'};
+    const dir=r['flow-direction'];
+    const isIngress=dir==='ingress'||(!dir&&!isPrivate(r.srcaddr));
+    if(isIngress){
+      r.action==='ACCEPT'?map[eni].inAccept++:map[eni].inReject++;
+      map[eni].bytesIn+=r._bytes;
+      map[eni].srcIPs.add(r.srcaddr);
+    }else{
+      r.action==='ACCEPT'?map[eni].outAccept++:map[eni].outReject++;
+      map[eni].bytesOut+=r._bytes;
+      map[eni].dstIPs.add(r.dstaddr);
+    }
+    // Track which private IPs are on this ENI
+    [r.srcaddr,r.dstaddr].forEach(ip=>{if(isPrivate(ip)&&ip!=='0.0.0.0')map[eni].privateIPs.add(ip);});
+  });
+  const sorted=Object.entries(map).sort((a,b)=>(b[1].inAccept+b[1].inReject+b[1].outAccept+b[1].outReject)-(a[1].inAccept+a[1].inReject+a[1].outAccept+a[1].outReject));
+  if(!sorted.length)return'';
+  let html=`<h2>🔌 Network Interface (ENI) Breakdown</h2>
+  <p class="sub">Traffic per ENI — shows which interface is the primary attack surface vs internal communication.</p>
+  <div class="tw"><table><thead><tr><th>ENI</th><th>Private IP</th><th>Subnet</th><th>⬇ In Accept</th><th>⬇ In Reject</th><th>⬆ Out Accept</th><th>Bytes In</th><th>Bytes Out</th><th>Unique Sources</th></tr></thead><tbody>`;
+  sorted.forEach(([eni,d])=>{
+    const rejectPct=(d.inAccept+d.inReject)?Math.round(d.inReject/(d.inAccept+d.inReject)*100):0;
+    html+=`<tr><td><b>${eni}</b></td><td>${[...d.privateIPs].join(', ')}</td><td>${d.subnet}</td>
+    <td>${d.inAccept.toLocaleString()}</td><td>${d.inReject.toLocaleString()} <span class="t ${rejectPct>50?'cr':'ok'}">${rejectPct}%</span></td>
+    <td>${d.outAccept.toLocaleString()}</td>
+    <td>${formatBytes(d.bytesIn)}</td><td>${formatBytes(d.bytesOut)}</td>
+    <td>${d.srcIPs.size.toLocaleString()}</td></tr>`;
+  });
+  return html+'</tbody></table></div>';
+}
 
 // === THREAT TABLE ===
 function threatTable(recs){
