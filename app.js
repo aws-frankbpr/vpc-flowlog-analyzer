@@ -94,9 +94,9 @@ function showError(msg){
 async function resolveOneIP(ip){
   if(geoCache[ip])return;
   try{
-    const r=await fetch('https://ipwho.is/'+ip);
+    const r=await fetch('https://freeipapi.com/api/json/'+ip);
     const d=await r.json();
-    if(d.success!==false)geoCache[ip]={country:d.country||'Unknown',cc:d.country_code||'??',org:d.connection?.org||d.connection?.isp||'Unknown'};
+    if(d.countryCode)geoCache[ip]={country:d.countryName||'Unknown',cc:d.countryCode||'??',org:d.regionName||'Unknown'};
   }catch(e){}
 }
 // Called from inline button
@@ -106,23 +106,33 @@ async function resolveIP(ip,btnId){
   await resolveOneIP(ip);
   render();
 }
-// Resolve all public IPs
+// Resolve all public IPs — uses ip-api.com batch (100/req) via corsproxy
 async function resolveAllGeo(){
   const pubIPs=[...new Set(allRecords.flatMap(r=>[r.srcaddr,r.dstaddr]).filter(ip=>!isPrivate(ip)&&!geoCache[ip]))];
   if(!pubIPs.length){alert('All IPs already resolved!');return}
   const btn=document.getElementById('resolveAllBtn');
-  if(btn)btn.disabled=true;
+  if(btn){btn.disabled=true;btn.textContent='⏳ 0/'+pubIPs.length+'...';}
   window._skipGeo=false;
-  const chunks=[];
-  for(let i=0;i<pubIPs.length;i+=50)chunks.push(pubIPs.slice(i,i+50));
+  const batches=[];
+  for(let i=0;i<pubIPs.length;i+=100)batches.push(pubIPs.slice(i,i+100));
   let done=0;
-  for(const chunk of chunks){
+  for(const batch of batches){
     if(window._skipGeo)break;
-    await Promise.all(chunk.map(ip=>resolveOneIP(ip)));
-    done+=chunk.length;
+    try{
+      const r=await fetch('https://corsproxy.io/?url='+encodeURIComponent('http://ip-api.com/batch?fields=status,query,country,countryCode,org,isp'),{
+        method:'POST',body:JSON.stringify(batch)
+      });
+      const data=await r.json();
+      data.forEach(d=>{if(d.status==='success')geoCache[d.query]={country:d.country,cc:d.countryCode,org:d.org||d.isp||'Unknown'};});
+    }catch(e){
+      // Fallback: individual via freeipapi
+      await Promise.all(batch.slice(0,20).map(ip=>resolveOneIP(ip)));
+    }
+    done+=batch.length;
     if(btn)btn.textContent=`⏳ ${done}/${pubIPs.length}...`;
-    await new Promise(r=>setTimeout(r,100));
+    await new Promise(r=>setTimeout(r,1500)); // rate limit
   }
+  if(btn){btn.disabled=false;btn.textContent='🌍 Resolve All GeoIP';}
   render();
 }
 function skipGeo(){window._skipGeo=true;render();}
