@@ -94,19 +94,22 @@ function showError(msg){
 // Resolve only IPs shown in top 20 tables
 async function resolveAllGeo(){
   const recs=applyFilters();
-  // Collect IPs from the tables that would be rendered
-  const threatMap=buildThreatData(recs);
-  const pubSrcs=[...new Set(recs.filter(r=>!r._private).map(r=>r.srcaddr))];
+  const inbound=recs.filter(r=>isInbound(r));
+  const outbound=recs.filter(r=>!isInbound(r));
+  // Collect IPs from inbound threat table
+  const threatMap=buildThreatData(inbound);
+  const pubSrcs=[...new Set(inbound.filter(r=>!r._private).map(r=>r.srcaddr))];
   const threatIPs=pubSrcs.map(ip=>scoreSrc(ip,threatMap)).filter(s=>s&&(s.hrPorts>0||s.ports>=3||s.rejected>0)).sort((a,b)=>b.hrPorts-a.hrPorts||b.ports-a.ports||b.rejected-a.rejected).slice(0,20).map(s=>s.ip);
-  const acc=recs.filter(r=>r.action==='ACCEPT');
-  const talkerMap={};
-  acc.forEach(r=>{if(!talkerMap[r.srcaddr])talkerMap[r.srcaddr]=0;talkerMap[r.srcaddr]+=r._bytes;});
-  const talkerIPs=Object.entries(talkerMap).sort((a,b)=>b[1]-a[1]).slice(0,20).map(([ip])=>ip);
-  const allTableIPs=[...new Set([...threatIPs,...talkerIPs])].filter(ip=>!isPrivate(ip)&&!geoCache[ip]);
+  // Collect IPs from inbound top sources
+  const inMap={};inbound.filter(r=>r.action==='ACCEPT').forEach(r=>{inMap[r.srcaddr]=(inMap[r.srcaddr]||0)+r._bytes;});
+  const inTopIPs=Object.entries(inMap).sort((a,b)=>b[1]-a[1]).slice(0,20).map(([ip])=>ip);
+  // Collect IPs from outbound top destinations
+  const outMap={};outbound.filter(r=>r.action==='ACCEPT').forEach(r=>{outMap[r.dstaddr]=(outMap[r.dstaddr]||0)+r._bytes;});
+  const outTopIPs=Object.entries(outMap).sort((a,b)=>b[1]-a[1]).slice(0,20).map(([ip])=>ip);
+  const allTableIPs=[...new Set([...threatIPs,...inTopIPs,...outTopIPs])].filter(ip=>!isPrivate(ip)&&!geoCache[ip]);
   if(!allTableIPs.length){alert('All visible IPs already resolved!');return}
   const btn=document.getElementById('resolveAllBtn');
   if(btn){btn.disabled=true;btn.textContent=`⏳ Resolving ${allTableIPs.length} IPs...`;}
-  // Batch via CORS proxy
   const batches=[];
   for(let i=0;i<allTableIPs.length;i+=100)batches.push(allTableIPs.slice(i,i+100));
   for(const batch of batches){
@@ -174,39 +177,38 @@ function scoreSrc(ip,threatMap){
   return{ip,ports:d.ports.size,hrPorts:d.hrPorts.size,restrictedList,hasRestricted,rejected:d.rejected,total:d.total,rejectPct,synPct,topPorts};
 }
 
+// === CLASSIFY DIRECTION ===
+function isInbound(r){
+  if(r['flow-direction']==='ingress')return true;
+  if(r['flow-direction']==='egress')return false;
+  return !isPrivate(r.srcaddr); // no direction field: public src = inbound
+}
+
 // === RENDER ===
 function render(){
   const R=document.getElementById('results');
   const recs=applyFilters();
+  const inbound=recs.filter(r=>isInbound(r));
+  const outbound=recs.filter(r=>!isInbound(r));
   const total=recs.length;
-  const accepted=recs.filter(r=>r.action==='ACCEPT').length;
-  const rejected=recs.filter(r=>r.action==='REJECT').length;
-  const totalBytes=recs.reduce((s,r)=>s+r._bytes,0);
-  const uniqueSrc=new Set(recs.map(r=>r.srcaddr)).size;
-  const pubIPs=new Set(recs.filter(r=>!r._private).map(r=>r.srcaddr)).size;
   const starts=recs.map(r=>r._start).filter(t=>t>0);
   const ends=recs.map(r=>r._end).filter(t=>t>0);
   const minT=Math.min(...starts),maxT=Math.max(...ends);
   const timeRange=minT&&maxT?`${new Date(minT*1000).toISOString().slice(0,19)}Z → ${new Date(maxT*1000).toISOString().slice(0,19)}Z`:'Unknown';
-  const rejectPct=total?Math.round(rejected/total*100):0;
-  const countries=new Set(recs.filter(r=>!r._private).map(r=>{const g=geoFor(r.srcaddr);return g?g.country:'?';}).filter(c=>c!=='?')).size;
 
-  // ENI / VPC / Subnet context
   const enis=[...new Set(recs.map(r=>r['interface-id']).filter(Boolean).filter(v=>v!=='-'))];
   const vpcs=[...new Set(recs.map(r=>r['vpc-id']).filter(Boolean).filter(v=>v!=='-'))];
   const subnets=[...new Set(recs.map(r=>r['subnet-id']).filter(Boolean).filter(v=>v!=='-'))];
   const accounts=[...new Set(recs.map(r=>r['account-id']).filter(Boolean).filter(v=>v!=='-'))];
   const privateIPs=[...new Set(recs.flatMap(r=>[r.srcaddr,r.dstaddr]).filter(ip=>isPrivate(ip)&&ip!=='0.0.0.0'))];
-
-  // ENI filter options
   const eniList=[...new Set(recs.map(r=>r['interface-id']).filter(v=>v&&v!=='-'))];
   const eniOpts=eniList.map(e=>`<option value="${e}">${e}</option>`).join('');
 
   let html=`
   <div class="card" style="border-left-color:#0972d3">
-    <b>${allRecords.length.toLocaleString()}</b> records parsed | Showing: <b>${total.toLocaleString()}</b> | Period: ${timeRange}<br>
+    <b>${allRecords.length.toLocaleString()}</b> records parsed | Showing: <b>${total.toLocaleString()}</b> (⬇ ${inbound.length.toLocaleString()} inbound, ⬆ ${outbound.length.toLocaleString()} outbound) | Period: ${timeRange}<br>
     ${accounts.length?'<b>Account:</b> '+accounts.join(', ')+' | ':''}${vpcs.length?'<b>VPC:</b> '+vpcs.join(', ')+' | ':''}${subnets.length?'<b>Subnets:</b> '+subnets.join(', ')+' | ':''}${enis.length?'<b>ENIs:</b> '+enis.join(', '):''}
-    ${privateIPs.length?'<br><b>Internal IPs:</b> '+privateIPs.slice(0,5).join(', ')+(privateIPs.length>5?' (+'+( privateIPs.length-5)+' more)':''):''}
+    ${privateIPs.length?'<br><b>Internal IPs:</b> '+privateIPs.slice(0,5).join(', ')+(privateIPs.length>5?' (+'+(privateIPs.length-5)+' more)':''):''}
   </div>
   <div class="filters" id="filterBar">
     <label>Action:</label><select id="fAction"><option value="all">All</option><option value="ACCEPT">Accept</option><option value="REJECT">Reject</option></select>
@@ -216,31 +218,54 @@ function render(){
     <button onclick="applyAndRender()">Apply</button>
     <button onclick="resetFilters()" style="background:#5f6b7a">Reset</button>
     <button id="resolveAllBtn" onclick="resolveAllGeo()" style="background:#ec7211">🌍 Resolve GeoIP</button>
-  </div>
-  <div class="grid">
-    <div class="s in"><div class="n">${total.toLocaleString()}</div><div class="l">Total Flows</div></div>
-    <div class="s ok"><div class="n">${accepted.toLocaleString()}</div><div class="l">✅ Accepted</div></div>
-    <div class="s cr"><div class="n">${rejected.toLocaleString()}</div><div class="l">❌ Rejected</div></div>
-    <div class="s wa"><div class="n">${rejectPct}%</div><div class="l">Reject Rate</div></div>
-    <div class="s in"><div class="n">${pubIPs.toLocaleString()}</div><div class="l">🌐 Public IPs</div></div>
-    <div class="s wa"><div class="n">${countries}</div><div class="l">🌍 Countries</div></div>
-    <div class="s in"><div class="n">${formatBytes(totalBytes)}</div><div class="l">Traffic</div></div>
   </div>`;
+
   html+=eniTable(recs);
-  html+=threatTable(recs);
-  html+=geoTable(recs);
-  html+=topDestPorts(recs);
-  html+=protocolBreakdown(recs);
+
+  // === INBOUND SECTION ===
+  html+=`<h2 style="color:#0972d3;font-size:1.3em;border-bottom:3px solid #0972d3">⬇ Inbound Traffic (${inbound.length.toLocaleString()} flows, ${formatBytes(inbound.reduce((s,r)=>s+r._bytes,0))})</h2>`;
+  html+=summaryGrid(inbound);
+  html+=threatTable(inbound);
+  html+=geoTable(inbound,'srcaddr');
+  html+=topPorts(inbound,'dstport','Top Inbound Destination Ports');
+  html+=protocolBreakdown(inbound);
+  html+=topIPs(inbound,'srcaddr','Top Inbound Source IPs (by bytes)');
+
+  // === OUTBOUND SECTION ===
+  html+=`<h2 style="color:#ec7211;font-size:1.3em;border-bottom:3px solid #ec7211">⬆ Outbound Traffic (${outbound.length.toLocaleString()} flows, ${formatBytes(outbound.reduce((s,r)=>s+r._bytes,0))})</h2>`;
+  html+=summaryGrid(outbound);
+  html+=topPorts(outbound,'dstport','Top Outbound Destination Ports');
+  html+=protocolBreakdown(outbound);
+  html+=topIPs(outbound,'dstaddr','Top Outbound Destination IPs (by bytes)');
+
+  // === COMBINED ===
+  html+=`<h2 style="font-size:1.3em;border-bottom:3px solid #5f6b7a">📊 Combined Timeline</h2>`;
   html+=timeline(recs);
-  html+=topTalkers(recs);
+
   R.innerHTML=html;
   R.style.display='block';
   document.getElementById('loading').classList.remove('show');
-  // Restore filter values
   document.getElementById('fAction').value=currentFilter.action;
   document.getElementById('fProto').value=currentFilter.protocol;
   document.getElementById('fEni').value=currentFilter.eni;
   document.getElementById('fSearch').value=currentFilter.search;
+}
+
+// === SUMMARY GRID (reusable) ===
+function summaryGrid(recs){
+  const accepted=recs.filter(r=>r.action==='ACCEPT').length;
+  const rejected=recs.filter(r=>r.action==='REJECT').length;
+  const rejectPct=recs.length?Math.round(rejected/recs.length*100):0;
+  const bytes=recs.reduce((s,r)=>s+r._bytes,0);
+  const uniqueIPs=new Set(recs.map(r=>r.srcaddr)).size;
+  return`<div class="grid">
+    <div class="s in"><div class="n">${recs.length.toLocaleString()}</div><div class="l">Flows</div></div>
+    <div class="s ok"><div class="n">${accepted.toLocaleString()}</div><div class="l">✅ Accepted</div></div>
+    <div class="s cr"><div class="n">${rejected.toLocaleString()}</div><div class="l">❌ Rejected</div></div>
+    <div class="s wa"><div class="n">${rejectPct}%</div><div class="l">Reject Rate</div></div>
+    <div class="s in"><div class="n">${uniqueIPs.toLocaleString()}</div><div class="l">Unique IPs</div></div>
+    <div class="s in"><div class="n">${formatBytes(bytes)}</div><div class="l">Traffic</div></div>
+  </div>`;
 }
 
 function applyFilters(){
@@ -324,22 +349,22 @@ function threatTable(recs){
   return html+'</tbody></table></div>';
 }
 
-// === GEO TABLE ===
-function geoTable(recs){
-  const inbound=recs.filter(r=>!r._private);
+// === GEO TABLE (reusable, ipField = which field to geolocate) ===
+function geoTable(recs,ipField){
   const map={};
-  inbound.forEach(r=>{
-    const g=geoFor(r.srcaddr);
+  recs.forEach(r=>{
+    const ip=r[ipField];
+    if(isPrivate(ip))return;
+    const g=geoFor(ip);
     const k=g?g.cc+'|'+g.country:'??|Not resolved';
     if(!map[k])map[k]={country:g?g.country:'Not resolved',cc:g?g.cc:'??',accept:0,reject:0,ips:new Set()};
     r.action==='ACCEPT'?map[k].accept++:map[k].reject++;
-    map[k].ips.add(r.srcaddr);
+    map[k].ips.add(ip);
   });
   const sorted=Object.values(map).sort((a,b)=>(b.accept+b.reject)-(a.accept+a.reject));
   const top=sorted.slice(0,20);
   if(!top.length)return'';
-  let html=`<h2>🌍 Geographic Distribution</h2>
-  <p class="sub">Top 20 of ${sorted.length} countries by traffic volume.</p>
+  let html=`<h3>🌍 Geographic Distribution — Top 20 of ${sorted.length}</h3>
   <div class="tw"><table><thead><tr><th>Country</th><th>Accepted</th><th>Unique IPs</th><th>Rejected</th><th>Reject Rate</th></tr></thead><tbody>`;
   top.forEach(d=>{
     const t=d.accept+d.reject;const rp=t?Math.round(d.reject/t*100):0;
@@ -349,16 +374,32 @@ function geoTable(recs){
   return html+'</tbody></table></div>';
 }
 
-// === TOP DEST PORTS ===
-function topDestPorts(recs){
+// === TOP PORTS (reusable) ===
+function topPorts(recs,portField,title){
   const map={};
-  recs.forEach(r=>{const p=r._dstport;if(!p)return;if(!map[p])map[p]={accept:0,reject:0};r.action==='ACCEPT'?map[p].accept++:map[p].reject++;});
+  recs.forEach(r=>{const p=parseInt(r[portField])||0;if(!p)return;if(!map[p])map[p]={accept:0,reject:0};r.action==='ACCEPT'?map[p].accept++:map[p].reject++;});
   const sorted=Object.entries(map).sort((a,b)=>(b[1].accept+b[1].reject)-(a[1].accept+a[1].reject));
   const top=sorted.slice(0,20);
-  let html=`<h2>🔌 Top Destination Ports</h2><p class="sub">Top 20 of ${sorted.length} destination ports by flow count.</p><div class="tw"><table><thead><tr><th>Port</th><th>Service</th><th>Accepted</th><th>Rejected</th><th>Total</th><th>Reject %</th></tr></thead><tbody>`;
+  if(!top.length)return'';
+  let html=`<h3>🔌 ${title} — Top 20 of ${sorted.length}</h3><div class="tw"><table><thead><tr><th>Port</th><th>Service</th><th>Accepted</th><th>Rejected</th><th>Total</th><th>Reject %</th></tr></thead><tbody>`;
   top.forEach(([port,d])=>{
     const t=d.accept+d.reject;const rp=t?Math.round(d.reject/t*100):0;const cls=rp>70?'cr':rp>30?'wa':'ok';
     html+=`<tr><td><b>${port}</b></td><td>${PORTS[port]||'—'}</td><td>${d.accept.toLocaleString()}</td><td>${d.reject.toLocaleString()}</td><td>${t.toLocaleString()}</td><td><span class="t ${cls}">${rp}%</span></td></tr>`;
+  });
+  return html+'</tbody></table></div>';
+}
+
+// === TOP IPs (reusable, by bytes) ===
+function topIPs(recs,ipField,title){
+  const acc=recs.filter(r=>r.action==='ACCEPT');
+  const map={};
+  acc.forEach(r=>{const ip=r[ipField];if(!map[ip])map[ip]={flows:0,bytes:0};map[ip].flows++;map[ip].bytes+=r._bytes;});
+  const sorted=Object.entries(map).sort((a,b)=>b[1].bytes-a[1].bytes);
+  const top=sorted.slice(0,20);
+  if(!top.length)return'';
+  let html=`<h3>📈 ${title} — Top 20 of ${sorted.length}</h3><div class="tw"><table><thead><tr><th>IP</th><th>Country</th><th>Org</th><th>Flows</th><th>Bytes</th></tr></thead><tbody>`;
+  top.forEach(([ip,d])=>{
+    html+=`<tr><td><b>${ip}</b></td><td>${ipGeoCell(ip)}</td><td>${ipOrgCell(ip)}</td><td>${d.flows.toLocaleString()}</td><td>${formatBytes(d.bytes)}</td></tr>`;
   });
   return html+'</tbody></table></div>';
 }
@@ -392,17 +433,4 @@ function timeline(recs){
   return html+'</tbody></table></div>';
 }
 
-// === TOP TALKERS ===
-function topTalkers(recs){
-  const acc=recs.filter(r=>r.action==='ACCEPT');
-  const map={};
-  acc.forEach(r=>{if(!map[r.srcaddr])map[r.srcaddr]={flows:0,bytes:0};map[r.srcaddr].flows++;map[r.srcaddr].bytes+=r._bytes;});
-  const sorted=Object.entries(map).sort((a,b)=>b[1].bytes-a[1].bytes);
-  const top=sorted.slice(0,20);
-  if(!top.length)return'';
-  let html=`<h2>📈 Top Talkers (by bytes)</h2><p class="sub">Top 20 of ${sorted.length} source IPs by accepted traffic volume.</p><div class="tw"><table><thead><tr><th>Source IP</th><th>Country</th><th>Org</th><th>Flows</th><th>Bytes</th></tr></thead><tbody>`;
-  top.forEach(([ip,d])=>{
-    html+=`<tr><td><b>${ip}</b></td><td>${ipGeoCell(ip)}</td><td>${ipOrgCell(ip)}</td><td>${d.flows.toLocaleString()}</td><td>${formatBytes(d.bytes)}</td></tr>`;
-  });
-  return html+'</tbody></table></div>';
-}
+// (topTalkers replaced by reusable topIPs function above)
