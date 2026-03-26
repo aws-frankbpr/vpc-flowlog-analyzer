@@ -226,17 +226,18 @@ function render(){
   html+=`<h2 style="color:#0972d3;font-size:1.3em;border-bottom:3px solid #0972d3">⬇ Inbound Traffic (${inbound.length.toLocaleString()} flows, ${formatBytes(inbound.reduce((s,r)=>s+r._bytes,0))})</h2>`;
   html+=summaryGrid(inbound);
   html+=threatTable(inbound);
-  html+=geoTable(inbound,'srcaddr');
   html+=topPorts(inbound,'dstport','Top Inbound Destination Ports');
-  html+=protocolBreakdown(inbound);
+  html+=geoTable(inbound,'srcaddr');
   html+=topIPs(inbound,'srcaddr','Top Inbound Source IPs (by bytes)');
+  html+=protocolBreakdown(inbound);
 
   // === OUTBOUND SECTION ===
   html+=`<h2 style="color:#ec7211;font-size:1.3em;border-bottom:3px solid #ec7211">⬆ Outbound Traffic (${outbound.length.toLocaleString()} flows, ${formatBytes(outbound.reduce((s,r)=>s+r._bytes,0))})</h2>`;
   html+=summaryGrid(outbound);
   html+=topPorts(outbound,'dstport','Top Outbound Destination Ports');
-  html+=protocolBreakdown(outbound);
+  html+=geoTable(outbound,'dstaddr');
   html+=topIPs(outbound,'dstaddr','Top Outbound Destination IPs (by bytes)');
+  html+=protocolBreakdown(outbound);
 
   // === COMBINED ===
   html+=`<h2 style="font-size:1.3em;border-bottom:3px solid #5f6b7a">📊 Combined Timeline</h2>`;
