@@ -328,10 +328,10 @@ function threatTable(recs){
   const scored=pubSrcs.map(ip=>scoreSrc(ip,threatMap)).filter(s=>s&&(s.hrPorts>0||s.ports>=3||s.rejected>0));
   // Sort: restricted ports first, then by total ports, then by rejected
   scored.sort((a,b)=>b.hrPorts-a.hrPorts||b.ports-a.ports||b.rejected-a.rejected);
-  const top=scored.slice(0,30);
+  const top=scored.slice(0,20);
   if(!top.length)return'';
   let html=`<h2>🎯 Source IP Activity — <a href="https://docs.aws.amazon.com/config/latest/developerguide/restricted-common-ports.html">AWS Config Restricted Ports</a> Analysis</h2>
-  <p class="sub">IPs that targeted ports flagged by AWS Config <code>restricted-common-ports</code> rule (20, 21, 22, 23, 3389, 3306, etc.) or contacted 3+ distinct ports. Data only — no severity assigned. For threat detection, enable <a href="https://docs.aws.amazon.com/guardduty/latest/ug/what-is-guardduty.html">Amazon GuardDuty</a>.</p>
+  <p class="sub">Top 20 of ${scored.length} IPs that targeted <code>restricted-common-ports</code> (20, 21, 22, 23, 3389, 3306, etc.) or contacted 3+ distinct ports. Data only — no severity assigned. For threat detection, enable <a href="https://docs.aws.amazon.com/guardduty/latest/ug/what-is-guardduty.html">Amazon GuardDuty</a>.</p>
   <div class="tw"><table><thead><tr><th>Source IP</th><th>Country</th><th>Org</th><th>Total Dest Ports</th><th>Top 5 Ports</th><th>Restricted Ports Hit</th><th>Flows</th><th>Rejected</th><th>Reject %</th><th>SYN-only %</th></tr></thead><tbody>`;
   top.forEach(s=>{
     const rCls=s.rejectPct>70?'cr':s.rejectPct>30?'wa':'ok';
@@ -359,10 +359,12 @@ function geoTable(recs){
     map[k].ips.add(r.srcaddr);
   });
   const sorted=Object.values(map).sort((a,b)=>(b.accept+b.reject)-(a.accept+a.reject));
-  if(!sorted.length)return'';
+  const top=sorted.slice(0,20);
+  if(!top.length)return'';
   let html=`<h2>🌍 Geographic Distribution</h2>
+  <p class="sub">Top 20 of ${sorted.length} countries by traffic volume.</p>
   <div class="tw"><table><thead><tr><th>Country</th><th>Accepted</th><th>Unique IPs</th><th>Rejected</th><th>Reject Rate</th></tr></thead><tbody>`;
-  sorted.forEach(d=>{
+  top.forEach(d=>{
     const t=d.accept+d.reject;const rp=t?Math.round(d.reject/t*100):0;
     const cls=rp>70?'cr':rp>30?'wa':'ok';
     html+=`<tr><td>${flag(d.cc)} ${d.country}</td><td>${d.accept.toLocaleString()}</td><td>${d.ips.size}</td><td>${d.reject.toLocaleString()}</td><td><span class="t ${cls}">${rp}%</span></td></tr>`;
@@ -374,9 +376,10 @@ function geoTable(recs){
 function topDestPorts(recs){
   const map={};
   recs.forEach(r=>{const p=r._dstport;if(!p)return;if(!map[p])map[p]={accept:0,reject:0};r.action==='ACCEPT'?map[p].accept++:map[p].reject++;});
-  const sorted=Object.entries(map).sort((a,b)=>(b[1].accept+b[1].reject)-(a[1].accept+a[1].reject)).slice(0,20);
-  let html=`<h2>🔌 Top Destination Ports</h2><div class="tw"><table><thead><tr><th>Port</th><th>Service</th><th>Accepted</th><th>Rejected</th><th>Total</th><th>Reject %</th></tr></thead><tbody>`;
-  sorted.forEach(([port,d])=>{
+  const sorted=Object.entries(map).sort((a,b)=>(b[1].accept+b[1].reject)-(a[1].accept+a[1].reject));
+  const top=sorted.slice(0,20);
+  let html=`<h2>🔌 Top Destination Ports</h2><p class="sub">Top 20 of ${sorted.length} destination ports by flow count.</p><div class="tw"><table><thead><tr><th>Port</th><th>Service</th><th>Accepted</th><th>Rejected</th><th>Total</th><th>Reject %</th></tr></thead><tbody>`;
+  top.forEach(([port,d])=>{
     const t=d.accept+d.reject;const rp=t?Math.round(d.reject/t*100):0;const cls=rp>70?'cr':rp>30?'wa':'ok';
     html+=`<tr><td><b>${port}</b></td><td>${PORTS[port]||'—'}</td><td>${d.accept.toLocaleString()}</td><td>${d.reject.toLocaleString()}</td><td>${t.toLocaleString()}</td><td><span class="t ${cls}">${rp}%</span></td></tr>`;
   });
@@ -417,10 +420,11 @@ function topTalkers(recs){
   const acc=recs.filter(r=>r.action==='ACCEPT');
   const map={};
   acc.forEach(r=>{if(!map[r.srcaddr])map[r.srcaddr]={flows:0,bytes:0};map[r.srcaddr].flows++;map[r.srcaddr].bytes+=r._bytes;});
-  const sorted=Object.entries(map).sort((a,b)=>b[1].bytes-a[1].bytes).slice(0,20);
-  if(!sorted.length)return'';
-  let html=`<h2>📈 Top Talkers (by bytes)</h2><div class="tw"><table><thead><tr><th>Source IP</th><th>Country</th><th>Org</th><th>Flows</th><th>Bytes</th></tr></thead><tbody>`;
-  sorted.forEach(([ip,d])=>{
+  const sorted=Object.entries(map).sort((a,b)=>b[1].bytes-a[1].bytes);
+  const top=sorted.slice(0,20);
+  if(!top.length)return'';
+  let html=`<h2>📈 Top Talkers (by bytes)</h2><p class="sub">Top 20 of ${sorted.length} source IPs by accepted traffic volume.</p><div class="tw"><table><thead><tr><th>Source IP</th><th>Country</th><th>Org</th><th>Flows</th><th>Bytes</th></tr></thead><tbody>`;
+  top.forEach(([ip,d])=>{
     html+=`<tr><td><b>${ip}</b></td><td>${ipGeoCell(ip)}</td><td>${ipOrgCell(ip)}</td><td>${d.flows.toLocaleString()}</td><td>${formatBytes(d.bytes)}</td></tr>`;
   });
   return html+'</tbody></table></div>';
