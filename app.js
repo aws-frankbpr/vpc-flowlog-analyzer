@@ -76,8 +76,8 @@ function parseAndRender(text){
     allRecords.push(r);
   }
   if(!allRecords.length){showError('No valid flow records found');return}
-  // Collect unique public IPs for GeoIP
-  const pubIPs=[...new Set(allRecords.map(r=>r.srcaddr).filter(ip=>!isPrivate(ip)))];
+  // Collect unique public IPs for GeoIP (both src and dst)
+  const pubIPs=[...new Set(allRecords.flatMap(r=>[r.srcaddr,r.dstaddr]).filter(ip=>!isPrivate(ip)))];
   lookupGeo(pubIPs).then(()=>render());
 }
 
@@ -87,22 +87,24 @@ function showError(msg){
   document.getElementById('results').innerHTML=`<div class="card" style="border-left-color:#d13212"><b>Error:</b> ${msg}</div>`;
 }
 
-// === GEOIP LOOKUP (ip-api.com batch, 100 per request, free) ===
+// === GEOIP LOOKUP (ipwho.is — free, HTTPS, no key) ===
 async function lookupGeo(ips){
   document.getElementById('loading').innerHTML='⏳ Looking up GeoIP for '+ips.length+' public IPs...';
-  const batches=[];
-  for(let i=0;i<ips.length;i+=100)batches.push(ips.slice(i,i+100));
-  for(const batch of batches){
-    try{
-      const resp=await fetch('http://ip-api.com/batch?fields=status,query,country,countryCode,org,isp',{
-        method:'POST',body:JSON.stringify(batch.map(ip=>({query:ip}))),
-        headers:{'Content-Type':'application/json'}
-      });
-      const data=await resp.json();
-      data.forEach(d=>{if(d.status==='success')geoCache[d.query]={country:d.country,cc:d.countryCode,org:d.org||d.isp||'Unknown'};});
-      // Rate limit: 15 req/min for free tier
-      if(batches.length>1)await new Promise(r=>setTimeout(r,4100));
-    }catch(e){console.warn('GeoIP batch failed:',e);}
+  let done=0;
+  // ipwho.is has no batch endpoint, but allows 10k/month free. Use parallel with throttle.
+  const chunks=[];
+  for(let i=0;i<ips.length;i+=10)chunks.push(ips.slice(i,i+10));
+  for(const chunk of chunks){
+    await Promise.all(chunk.map(async ip=>{
+      try{
+        const r=await fetch('https://ipwho.is/'+ip);
+        const d=await r.json();
+        if(d.success!==false)geoCache[ip]={country:d.country||'Unknown',cc:d.country_code||'??',org:d.connection?.org||d.connection?.isp||'Unknown'};
+      }catch(e){}
+      done++;
+      if(done%50===0)document.getElementById('loading').innerHTML='⏳ GeoIP: '+done+'/'+ips.length+' IPs resolved...';
+    }));
+    await new Promise(r=>setTimeout(r,200));
   }
 }
 
@@ -153,9 +155,18 @@ function render(){
   const rejectPct=total?Math.round(rejected/total*100):0;
   const countries=new Set(recs.filter(r=>!r._private).map(r=>geoFor(r.srcaddr).country)).size;
 
+  // ENI / VPC / Subnet context
+  const enis=[...new Set(recs.map(r=>r['interface-id']).filter(Boolean).filter(v=>v!=='-'))];
+  const vpcs=[...new Set(recs.map(r=>r['vpc-id']).filter(Boolean).filter(v=>v!=='-'))];
+  const subnets=[...new Set(recs.map(r=>r['subnet-id']).filter(Boolean).filter(v=>v!=='-'))];
+  const accounts=[...new Set(recs.map(r=>r['account-id']).filter(Boolean).filter(v=>v!=='-'))];
+  const privateIPs=[...new Set(recs.flatMap(r=>[r.srcaddr,r.dstaddr]).filter(ip=>isPrivate(ip)&&ip!=='0.0.0.0'))];
+
   let html=`
   <div class="card" style="border-left-color:#0972d3">
-    <b>${allRecords.length.toLocaleString()}</b> records parsed | Showing: <b>${total.toLocaleString()}</b> | Period: ${timeRange}
+    <b>${allRecords.length.toLocaleString()}</b> records parsed | Showing: <b>${total.toLocaleString()}</b> | Period: ${timeRange}<br>
+    ${accounts.length?'<b>Account:</b> '+accounts.join(', ')+' | ':''}${vpcs.length?'<b>VPC:</b> '+vpcs.join(', ')+' | ':''}${subnets.length?'<b>Subnets:</b> '+subnets.join(', ')+' | ':''}${enis.length?'<b>ENIs:</b> '+enis.join(', '):''}
+    ${privateIPs.length?'<br><b>Internal IPs:</b> '+privateIPs.slice(0,5).join(', ')+(privateIPs.length>5?' (+'+( privateIPs.length-5)+' more)':''):''}
   </div>
   <div class="filters" id="filterBar">
     <label>Action:</label><select id="fAction"><option value="all">All</option><option value="ACCEPT">Accept</option><option value="REJECT">Reject</option></select>
