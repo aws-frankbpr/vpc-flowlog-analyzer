@@ -331,14 +331,13 @@ function threatTable(recs){
   const top=scored.slice(0,20);
   if(!top.length)return'';
   let html=`<h2>🎯 Source IP Activity — <a href="https://docs.aws.amazon.com/config/latest/developerguide/restricted-common-ports.html">AWS Config Restricted Ports</a> Analysis</h2>
-  <p class="sub">Top 20 of ${scored.length} IPs that targeted <code>restricted-common-ports</code> (20, 21, 22, 23, 3389, 3306, etc.) or contacted 3+ distinct ports. Data only — no severity assigned. For threat detection, enable <a href="https://docs.aws.amazon.com/guardduty/latest/ug/what-is-guardduty.html">Amazon GuardDuty</a>.</p>
-  <div class="tw"><table><thead><tr><th>Source IP</th><th>Country</th><th>Org</th><th>Unique Ports Contacted</th><th>Most Contacted Ports (count)</th><th>Restricted Ports Hit</th><th>Flows</th><th>Rejected</th><th>Reject %</th><th>SYN-only %</th></tr></thead><tbody>`;
+  <p class="sub">Top 20 of ${scored.length} public IPs that targeted <code>restricted-common-ports</code> or contacted 3+ unique ports. For threat detection, enable <a href="https://docs.aws.amazon.com/guardduty/latest/ug/what-is-guardduty.html">Amazon GuardDuty</a>.</p>
+  <div class="tw"><table><thead><tr><th>Source IP</th><th>Country</th><th>Org</th><th>Unique Ports</th><th>Restricted Ports Hit</th><th>Total Flows</th><th>Rejected</th><th>Reject %</th><th>SYN-only %</th></tr></thead><tbody>`;
   top.forEach(s=>{
     const rCls=s.rejectPct>70?'cr':s.rejectPct>30?'wa':'ok';
     html+=`<tr>
     <td><b>${s.ip}</b></td><td>${ipGeoCell(s.ip)}</td><td>${ipOrgCell(s.ip)}</td>
     <td>${s.ports.toLocaleString()}</td>
-    <td style="font-size:.75em;white-space:normal;max-width:200px">${s.topPorts}</td>
     <td>${s.hasRestricted?'<span class="t cr">'+s.restrictedList+'</span>':'—'}</td>
     <td>${s.total.toLocaleString()}</td><td>${s.rejected.toLocaleString()}</td>
     <td><span class="t ${rCls}">${s.rejectPct}%</span></td>
