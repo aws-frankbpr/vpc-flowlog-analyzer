@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>VPC Flow Log Analyzer</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,system-ui,sans-serif;background:#f2f3f3;color:#16191f;font-size:14px}
+.topbar{background:#232f3e;padding:12px 24px;display:flex;align-items:center;gap:12px}
+.topbar .title{color:#fff;font-size:1.1em;font-weight:600}
+.topbar .badge{background:#ec7211;color:#fff;padding:2px 10px;border-radius:4px;font-size:.75em;font-weight:600}
+.c{max-width:1200px;margin:0 auto;padding:20px 24px}
+.drop{border:2px dashed #aab7b8;border-radius:12px;padding:60px 20px;text-align:center;background:#fff;cursor:pointer;transition:all .2s}
+.drop:hover,.drop.over{border-color:#0972d3;background:#f2f8fd}
+.drop h2{color:#16191f;margin-bottom:8px}
+.drop p{color:#5f6b7a;font-size:.9em}
+.drop input{display:none}
+.privacy{background:#f2fcf3;border:1px solid #037f0c33;border-radius:8px;padding:12px 16px;margin-top:12px;font-size:.82em;color:#037f0c}
+#results{display:none}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:20px 0}
+.s{background:#fff;border-radius:8px;padding:14px;text-align:center;border:1px solid #e9ebed}
+.s .n{font-size:1.6em;font-weight:700}.s .l{color:#5f6b7a;font-size:.72em;margin-top:2px}
+.s.cr .n{color:#d13212}.s.ok .n{color:#037f0c}.s.in .n{color:#0972d3}.s.wa .n{color:#ec7211}
+h2{color:#16191f;margin:28px 0 10px;font-size:1.15em;font-weight:700;border-bottom:2px solid #e9ebed;padding-bottom:8px}
+.tw{overflow-x:auto;margin-bottom:16px;border-radius:8px;background:#fff;border:1px solid #e9ebed;max-height:60vh;overflow-y:auto}
+table{border-collapse:collapse;font-size:.8em;white-space:nowrap;min-width:100%;background:#fff}
+th{background:#fafafa;padding:8px 10px;text-align:left;font-size:.7em;text-transform:uppercase;color:#5f6b7a;font-weight:600;position:sticky;top:0;border-bottom:2px solid #e9ebed;cursor:pointer}
+th:hover{color:#0972d3}
+td{padding:6px 10px;border-bottom:1px solid #e9ebed}
+tr:hover{background:#f2f8fd}
+.t{display:inline-block;padding:2px 8px;border-radius:4px;font-size:.76em;font-weight:600}
+.cr{background:#fdf3f1;color:#d13212}.ok{background:#f2fcf3;color:#037f0c}.wa{background:#fef8f1;color:#ec7211}.in{background:#f2f8fd;color:#0972d3}
+.bar{height:8px;border-radius:3px;background:#e9ebed;display:flex;overflow:hidden;width:200px}
+.bar .fill{height:100%}
+.card{background:#fff;border-radius:8px;padding:16px;margin-bottom:12px;border:1px solid #e9ebed;border-left:4px solid #0972d3}
+.footer{text-align:center;color:#5f6b7a;margin-top:30px;font-size:.78em;padding:16px;border-top:1px solid #e9ebed}
+.loading{display:none;text-align:center;padding:40px;color:#5f6b7a}
+.loading.show{display:block}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <span class="title">🔍 VPC Flow Log Analyzer</span>
+  <span class="badge">Client-Side Only</span>
+</div>
+<div class="c">
+  <div id="upload">
+    <div class="drop" id="dropzone">
+      <h2>Drop your VPC Flow Log file here</h2>
+      <p>or click to browse — supports default v2 and custom format (v2-v7) text files</p>
+      <input type="file" id="fileInput" accept=".txt,.log,.csv,.gz">
+    </div>
+    <div class="privacy">🔒 Your data never leaves your browser. All processing happens locally in JavaScript — no uploads, no servers, no tracking.</div>
+  </div>
+  <div class="loading" id="loading">⏳ Parsing flow log records...</div>
+  <div id="results"></div>
+</div>
+<div class="footer">VPC Flow Log Analyzer — 100% client-side | <a href="https://docs.aws.amazon.com/vpc/latest/userguide/flow-log-records.html">AWS Flow Log Docs</a></div>
+
+<script>
+// --- KNOWN PORTS ---
+const PORTS={21:'FTP',22:'SSH',23:'Telnet',25:'SMTP',53:'DNS',80:'HTTP',110:'POP3',135:'RPC',137:'NetBIOS',143:'IMAP',443:'HTTPS',445:'SMB',993:'IMAPS',995:'POP3S',1433:'MSSQL',1521:'Oracle',3306:'MySQL',3389:'RDP',5432:'PostgreSQL',5900:'VNC',6379:'Redis',8080:'HTTP-Alt',8443:'HTTPS-Alt',27017:'MongoDB'};
+const PROTOS={1:'ICMP',6:'TCP',17:'UDP',47:'GRE',50:'ESP'};
+
+// --- V2 DEFAULT FIELDS ---
+const V2_FIELDS=['version','account-id','interface-id','srcaddr','dstaddr','srcport','dstport','protocol','packets','bytes','start','end','action','log-status'];
+
+// --- DROP ZONE ---
+const dz=document.getElementById('dropzone'),fi=document.getElementById('fileInput');
+dz.onclick=()=>fi.click();
+fi.onchange=e=>{if(e.target.files[0])processFile(e.target.files[0])};
+dz.ondragover=e=>{e.preventDefault();dz.classList.add('over')};
+dz.ondragleave=()=>dz.classList.remove('over');
+dz.ondrop=e=>{e.preventDefault();dz.classList.remove('over');if(e.dataTransfer.files[0])processFile(e.dataTransfer.files[0])};
+
+function processFile(file){
+  document.getElementById('loading').classList.add('show');
+  document.getElementById('results').style.display='none';
+  const reader=new FileReader();
+  reader.onload=e=>setTimeout(()=>parseAndRender(e.target.result),50);
+  reader.readAsText(file);
+}
+
+function detectFields(headerLine){
+  // Check if first line looks like a header (contains field names)
+  const parts=headerLine.trim().split(/\s+/);
+  if(parts.includes('version')||parts.includes('srcaddr')||parts.includes('account-id')){
+    return parts;
+  }
+  // No header — assume v2 default
+  if(parts.length===14) return V2_FIELDS;
+  return null;
+}
+
+function parseAndRender(text){
+  const lines=text.trim().split('\n').filter(l=>l.trim());
+  if(lines.length<2){showError('File has fewer than 2 lines');return}
+
+  const fields=detectFields(lines[0]);
+  if(!fields){showError('Could not detect flow log format');return}
+
+  const hasHeader=fields!==V2_FIELDS||lines[0].includes('version');
+  const dataLines=hasHeader?lines.slice(1):lines;
+
+  // Parse records
+  const records=[];
+  for(const line of dataLines){
+    const parts=line.trim().split(/\s+/);
+    if(parts.length<fields.length) continue;
+    const r={};
+    fields.forEach((f,i)=>r[f]=parts[i]);
+    if(r['log-status']==='NODATA'||r['log-status']==='SKIPDATA') continue;
+    r._srcport=parseInt(r.srcport)||0;
+    r._dstport=parseInt(r.dstport)||0;
+    r._protocol=parseInt(r.protocol)||0;
+    r._packets=parseInt(r.packets)||0;
+    r._bytes=parseInt(r.bytes)||0;
+    r._start=parseInt(r.start)||0;
+    r._end=parseInt(r.end)||0;
+    records.push(r);
+  }
+
+  if(!records.length){showError('No valid flow records found');return}
+  render(records,fields);
+}
+
+function showError(msg){
+  document.getElementById('loading').classList.remove('show');
+  document.getElementById('results').style.display='block';
+  document.getElementById('results').innerHTML=`<div class="card" style="border-left-color:#d13212"><b>Error:</b> ${msg}</div>`;
+}
+
+function render(records,fields){
+  const R=document.getElementById('results');
+  const total=records.length;
+  const accepted=records.filter(r=>r.action==='ACCEPT');
+  const rejected=records.filter(r=>r.action==='REJECT');
+  const totalBytes=records.reduce((s,r)=>s+r._bytes,0);
+  const uniqueSrc=new Set(records.map(r=>r.srcaddr)).size;
+  const uniqueDst=new Set(records.map(r=>r.dstaddr)).size;
+  const hasDirection=fields.includes('flow-direction');
+  const hasTcpFlags=fields.includes('tcp-flags');
+
+  // Time range
+  const starts=records.map(r=>r._start).filter(t=>t>0);
+  const ends=records.map(r=>r._end).filter(t=>t>0);
+  const minT=Math.min(...starts),maxT=Math.max(...ends);
+  const timeRange=minT&&maxT?`${new Date(minT*1000).toISOString().slice(0,19)}Z → ${new Date(maxT*1000).toISOString().slice(0,19)}Z`:'Unknown';
+
+  // Reject rate
+  const rejectPct=total?Math.round(rejected.length/total*100):0;
+
+  let html=`
+  <div class="card" style="border-left-color:#0972d3">
+    <b>${total.toLocaleString()}</b> flow records parsed | <b>${fields.length}</b> fields detected | Period: ${timeRange}
+  </div>
+  <div class="grid">
+    <div class="s in"><div class="n">${total.toLocaleString()}</div><div class="l">Total Records</div></div>
+    <div class="s ok"><div class="n">${accepted.length.toLocaleString()}</div><div class="l">✅ Accepted</div></div>
+    <div class="s cr"><div class="n">${rejected.length.toLocaleString()}</div><div class="l">❌ Rejected</div></div>
+    <div class="s wa"><div class="n">${rejectPct}%</div><div class="l">Reject Rate</div></div>
+    <div class="s in"><div class="n">${uniqueSrc.toLocaleString()}</div><div class="l">Unique Sources</div></div>
+    <div class="s in"><div class="n">${uniqueDst.toLocaleString()}</div><div class="l">Unique Destinations</div></div>
+    <div class="s in"><div class="n">${formatBytes(totalBytes)}</div><div class="l">Total Traffic</div></div>
+  </div>`;
+
+  // --- TOP REJECTED SOURCE IPs ---
+  html+=topRejectedSources(records);
+
+  // --- TOP DESTINATION PORTS ---
+  html+=topDestPorts(records);
+
+  // --- PROTOCOL BREAKDOWN ---
+  html+=protocolBreakdown(records);
+
+  // --- TIMELINE ---
+  html+=timeline(records);
+
+  // --- TOP TALKERS ---
+  html+=topTalkers(records);
+
+  R.innerHTML=html;
+  R.style.display='block';
+  document.getElementById('loading').classList.remove('show');
+}
+
+function topRejectedSources(records){
+  const rej=records.filter(r=>r.action==='REJECT');
+  if(!rej.length) return '';
+  const map={};
+  rej.forEach(r=>{
+    if(!map[r.srcaddr]) map[r.srcaddr]={count:0,ports:new Set()};
+    map[r.srcaddr].count++;
+    map[r.srcaddr].ports.add(r._dstport);
+  });
+  const sorted=Object.entries(map).sort((a,b)=>b[1].count-a[1].count).slice(0,20);
+  const maxCount=sorted[0]?sorted[0][1].count:1;
+  let html=`<h2>🔴 Top Rejected Source IPs</h2><div class="tw"><table><thead><tr><th>Source IP</th><th>Rejected Flows</th><th>Unique Ports Targeted</th><th>Distribution</th></tr></thead><tbody>`;
+  sorted.forEach(([ip,d])=>{
+    const pct=Math.round(d.count/maxCount*100);
+    html+=`<tr><td><b>${ip}</b></td><td>${d.count.toLocaleString()}</td><td>${d.ports.size}</td>
+    <td><div class="bar"><div class="fill" style="width:${pct}%;background:#d13212"></div></div></td></tr>`;
+  });
+  return html+`</tbody></table></div>`;
+}
+
+function topDestPorts(records){
+  const map={};
+  records.forEach(r=>{
+    const p=r._dstport;if(!p)return;
+    if(!map[p]) map[p]={accept:0,reject:0};
+    r.action==='ACCEPT'?map[p].accept++:map[p].reject++;
+  });
+  const sorted=Object.entries(map).sort((a,b)=>(b[1].accept+b[1].reject)-(a[1].accept+a[1].reject)).slice(0,20);
+  let html=`<h2>🔌 Top Destination Ports</h2><div class="tw"><table><thead><tr><th>Port</th><th>Service</th><th>Accepted</th><th>Rejected</th><th>Total</th><th>Reject %</th></tr></thead><tbody>`;
+  sorted.forEach(([port,d])=>{
+    const t=d.accept+d.reject;
+    const rp=t?Math.round(d.reject/t*100):0;
+    const cls=rp>70?'cr':rp>30?'wa':'ok';
+    html+=`<tr><td><b>${port}</b></td><td>${PORTS[port]||'—'}</td><td>${d.accept.toLocaleString()}</td><td>${d.reject.toLocaleString()}</td><td>${t.toLocaleString()}</td><td><span class="t ${cls}">${rp}%</span></td></tr>`;
+  });
+  return html+`</tbody></table></div>`;
+}
+
+function protocolBreakdown(records){
+  const map={};
+  records.forEach(r=>{
+    const p=r._protocol;
+    if(!map[p]) map[p]={accept:0,reject:0,bytes:0};
+    r.action==='ACCEPT'?map[p].accept++:map[p].reject++;
+    map[p].bytes+=r._bytes;
+  });
+  const sorted=Object.entries(map).sort((a,b)=>(b[1].accept+b[1].reject)-(a[1].accept+a[1].reject));
+  let html=`<h2>📡 Protocol Distribution</h2><div class="tw"><table><thead><tr><th>Protocol</th><th>Accepted</th><th>Rejected</th><th>Reject %</th><th>Bytes</th></tr></thead><tbody>`;
+  sorted.forEach(([proto,d])=>{
+    const t=d.accept+d.reject;
+    const rp=t?Math.round(d.reject/t*100):0;
+    const cls=rp>70?'cr':rp>30?'wa':'ok';
+    html+=`<tr><td><b>${PROTOS[proto]||'Proto '+proto}</b></td><td>${d.accept.toLocaleString()}</td><td>${d.reject.toLocaleString()}</td><td><span class="t ${cls}">${rp}%</span></td><td>${formatBytes(d.bytes)}</td></tr>`;
+  });
+  return html+`</tbody></table></div>`;
+}
+
+function timeline(records){
+  const map={};
+  records.forEach(r=>{
+    if(!r._start)return;
+    const h=new Date(r._start*1000).toISOString().slice(0,13)+':00';
+    if(!map[h]) map[h]={accept:0,reject:0};
+    r.action==='ACCEPT'?map[h].accept++:map[h].reject++;
+  });
+  const sorted=Object.entries(map).sort((a,b)=>a[0].localeCompare(b[0]));
+  if(!sorted.length) return '';
+  const maxT=Math.max(...sorted.map(([,d])=>d.accept+d.reject));
+  let html=`<h2>📊 Traffic Timeline (Hourly)</h2><div class="tw"><table><thead><tr><th>Hour (UTC)</th><th>Accepted</th><th>Rejected</th><th>Total</th><th>Distribution</th></tr></thead><tbody>`;
+  sorted.forEach(([hour,d])=>{
+    const t=d.accept+d.reject;
+    const ap=maxT?Math.round(d.accept/maxT*100):0;
+    const rp=maxT?Math.round(d.reject/maxT*100):0;
+    html+=`<tr><td>${hour}</td><td>${d.accept.toLocaleString()}</td><td>${d.reject.toLocaleString()}</td><td>${t.toLocaleString()}</td>
+    <td><div class="bar"><div class="fill" style="width:${ap}%;background:#037f0c"></div><div class="fill" style="width:${rp}%;background:#d13212"></div></div></td></tr>`;
+  });
+  return html+`</tbody></table></div>`;
+}
+
+function topTalkers(records){
+  const acc=records.filter(r=>r.action==='ACCEPT');
+  const map={};
+  acc.forEach(r=>{
+    if(!map[r.srcaddr]) map[r.srcaddr]={flows:0,bytes:0};
+    map[r.srcaddr].flows++;
+    map[r.srcaddr].bytes+=r._bytes;
+  });
+  const sorted=Object.entries(map).sort((a,b)=>b[1].bytes-a[1].bytes).slice(0,20);
+  if(!sorted.length) return '';
+  let html=`<h2>📈 Top Talkers (by bytes, accepted only)</h2><div class="tw"><table><thead><tr><th>Source IP</th><th>Flows</th><th>Bytes</th></tr></thead><tbody>`;
+  sorted.forEach(([ip,d])=>{
+    html+=`<tr><td><b>${ip}</b></td><td>${d.flows.toLocaleString()}</td><td>${formatBytes(d.bytes)}</td></tr>`;
+  });
+  return html+`</tbody></table></div>`;
+}
+
+function formatBytes(b){
+  if(b<1024)return b+' B';
+  if(b<1048576)return(b/1024).toFixed(1)+' KB';
+  if(b<1073741824)return(b/1048576).toFixed(1)+' MB';
+  return(b/1073741824).toFixed(2)+' GB';
+}
+</script>
+</body>
+</html>
