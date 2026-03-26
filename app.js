@@ -91,58 +91,36 @@ function showError(msg){
 }
 
 // === GEOIP ===
-async function resolveOneIP(ip){
-  if(geoCache[ip])return;
-  try{
-    const r=await fetch('https://freeipapi.com/api/json/'+ip);
-    const d=await r.json();
-    if(d.countryCode)geoCache[ip]={country:d.countryName||'Unknown',cc:d.countryCode||'??',org:d.regionName||'Unknown'};
-  }catch(e){}
-}
-// Called from inline button
-async function resolveIP(ip,btnId){
-  const btn=document.getElementById(btnId);
-  if(btn)btn.textContent='⏳';
-  if(!geoCache[ip]){
-    try{
-      const r=await fetch('https://corsproxy.io/?url='+encodeURIComponent('http://ip-api.com/json/'+ip+'?fields=status,query,country,countryCode,org,isp'));
-      const d=await r.json();
-      if(d.status==='success')geoCache[ip]={country:d.country,cc:d.countryCode,org:d.org||d.isp||'Unknown'};
-      else if(btn)btn.textContent='❌';
-    }catch(e){if(btn)btn.textContent='❌';}
-  }
-  render();
-}
-// Resolve all public IPs — uses ip-api.com batch (100/req) via corsproxy
+// Resolve only IPs shown in top 20 tables
 async function resolveAllGeo(){
-  const pubIPs=[...new Set(allRecords.flatMap(r=>[r.srcaddr,r.dstaddr]).filter(ip=>!isPrivate(ip)&&!geoCache[ip]))];
-  if(!pubIPs.length){alert('All IPs already resolved!');return}
+  const recs=applyFilters();
+  // Collect IPs from the tables that would be rendered
+  const threatMap=buildThreatData(recs);
+  const pubSrcs=[...new Set(recs.filter(r=>!r._private).map(r=>r.srcaddr))];
+  const threatIPs=pubSrcs.map(ip=>scoreSrc(ip,threatMap)).filter(s=>s&&(s.hrPorts>0||s.ports>=3||s.rejected>0)).sort((a,b)=>b.hrPorts-a.hrPorts||b.ports-a.ports||b.rejected-a.rejected).slice(0,20).map(s=>s.ip);
+  const acc=recs.filter(r=>r.action==='ACCEPT');
+  const talkerMap={};
+  acc.forEach(r=>{if(!talkerMap[r.srcaddr])talkerMap[r.srcaddr]=0;talkerMap[r.srcaddr]+=r._bytes;});
+  const talkerIPs=Object.entries(talkerMap).sort((a,b)=>b[1]-a[1]).slice(0,20).map(([ip])=>ip);
+  const allTableIPs=[...new Set([...threatIPs,...talkerIPs])].filter(ip=>!isPrivate(ip)&&!geoCache[ip]);
+  if(!allTableIPs.length){alert('All visible IPs already resolved!');return}
   const btn=document.getElementById('resolveAllBtn');
-  if(btn){btn.disabled=true;btn.textContent='⏳ 0/'+pubIPs.length+'...';}
-  window._skipGeo=false;
+  if(btn){btn.disabled=true;btn.textContent=`⏳ Resolving ${allTableIPs.length} IPs...`;}
+  // Batch via CORS proxy
   const batches=[];
-  for(let i=0;i<pubIPs.length;i+=100)batches.push(pubIPs.slice(i,i+100));
-  let done=0;
+  for(let i=0;i<allTableIPs.length;i+=100)batches.push(allTableIPs.slice(i,i+100));
   for(const batch of batches){
-    if(window._skipGeo)break;
     try{
       const r=await fetch('https://corsproxy.io/?url='+encodeURIComponent('http://ip-api.com/batch?fields=status,query,country,countryCode,org,isp'),{
         method:'POST',body:JSON.stringify(batch)
       });
       const data=await r.json();
       data.forEach(d=>{if(d.status==='success')geoCache[d.query]={country:d.country,cc:d.countryCode,org:d.org||d.isp||'Unknown'};});
-    }catch(e){
-      // Fallback: individual via freeipapi
-      await Promise.all(batch.slice(0,20).map(ip=>resolveOneIP(ip)));
-    }
-    done+=batch.length;
-    if(btn)btn.textContent=`⏳ ${done}/${pubIPs.length}...`;
-    await new Promise(r=>setTimeout(r,1500)); // rate limit
+    }catch(e){}
   }
-  if(btn){btn.disabled=false;btn.textContent='🌍 Resolve All GeoIP';}
+  if(btn){btn.disabled=false;btn.textContent='🌍 Resolve GeoIP';}
   render();
 }
-function skipGeo(){window._skipGeo=true;render();}
 
 function geoFor(ip){
   if(isPrivate(ip))return{country:'Private',cc:'🏠',org:'RFC1918'};
@@ -156,8 +134,7 @@ let _btnId=0;
 function ipGeoCell(ip){
   const g=geoFor(ip);
   if(g)return`${flag(g.cc)} ${g.country}`;
-  const id='gb'+(_btnId++);
-  return`<button id="${id}" onclick="resolveIP('${ip}','${id}')" style="padding:1px 6px;font-size:.7em;border:1px solid #aab7b8;border-radius:4px;background:#fff;cursor:pointer" title="Lookup GeoIP">🔍</button>`;
+  return'—';
 }
 function ipOrgCell(ip){
   const g=geoFor(ip);
@@ -199,7 +176,6 @@ function scoreSrc(ip,threatMap){
 
 // === RENDER ===
 function render(){
-  _btnId=0;
   const R=document.getElementById('results');
   const recs=applyFilters();
   const total=recs.length;
@@ -239,7 +215,7 @@ function render(){
     <label>Search IP:</label><input id="fSearch" placeholder="e.g. 10.0.1.">
     <button onclick="applyAndRender()">Apply</button>
     <button onclick="resetFilters()" style="background:#5f6b7a">Reset</button>
-    <button id="resolveAllBtn" onclick="resolveAllGeo()" style="background:#ec7211">🌍 Resolve All GeoIP</button>
+    <button id="resolveAllBtn" onclick="resolveAllGeo()" style="background:#ec7211">🌍 Resolve GeoIP</button>
   </div>
   <div class="grid">
     <div class="s in"><div class="n">${total.toLocaleString()}</div><div class="l">Total Flows</div></div>
