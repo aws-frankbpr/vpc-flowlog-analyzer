@@ -322,11 +322,12 @@ function topSourceIPs(recs){
   return html+'</tbody></table></div>';
 }
 
-// === TOP OUTBOUND DESTINATION IPs (combined: bytes + ports) ===
+// === TOP OUTBOUND DESTINATION IPs (public only — internal VPC traffic is normal) ===
 function topDestIPs(recs){
   const map={};
   recs.forEach(r=>{
     const ip=r.dstaddr;
+    if(isPrivate(ip))return; // Skip internal VPC traffic
     if(!map[ip])map[ip]={bytes:0,flows:0,accepted:0,rejected:0,ports:new Set()};
     const d=map[ip];
     d.flows++;d.bytes+=r._bytes;
@@ -335,7 +336,8 @@ function topDestIPs(recs){
   });
   const sorted=Object.entries(map).sort((a,b)=>b[1].bytes-a[1].bytes).slice(0,20);
   if(!sorted.length)return'';
-  let html=`<h3>🎯 Top 20 Outbound Destination IPs — of ${Object.keys(map).length}</h3>
+  let html=`<h3>🎯 Top 20 Outbound Destination IPs (public) — of ${Object.keys(map).length}</h3>
+  <p class="sub">Internal VPC traffic (RFC1918) excluded — private IP communication is expected behavior per <a href="https://docs.aws.amazon.com/vpc/latest/userguide/flow-logs-records-examples.html">AWS VPC Flow Log docs</a>.</p>
   <div class="tw"><table><thead><tr><th>Destination IP</th><th>Country</th><th>Org</th><th>Flows</th><th>Accepted</th><th>Rejected</th><th>Bytes</th><th>Unique Ports</th></tr></thead><tbody>`;
   sorted.forEach(([ip,d])=>{
     html+=`<tr><td><b>${ip}</b></td><td>${ipGeoCell(ip)}</td><td>${ipOrgCell(ip)}</td>
