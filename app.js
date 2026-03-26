@@ -34,9 +34,13 @@ dz.ondrop=e=>{e.preventDefault();dz.classList.remove('over');if(e.dataTransfer.f
 
 function processFile(file){
   document.getElementById('loading').classList.add('show');
+  document.getElementById('loading').innerHTML='⏳ Reading file...';
   document.getElementById('results').style.display='none';
   const reader=new FileReader();
-  reader.onload=e=>setTimeout(()=>parseAndRender(e.target.result),50);
+  reader.onload=e=>{
+    document.getElementById('loading').innerHTML='⏳ Parsing flow log records...';
+    setTimeout(()=>parseAndRender(e.target.result),100);
+  };
   reader.readAsText(file);
 }
 
@@ -76,7 +80,8 @@ function parseAndRender(text){
     allRecords.push(r);
   }
   if(!allRecords.length){showError('No valid flow records found');return}
-  render();
+  document.getElementById('loading').innerHTML='⏳ Rendering dashboard...';
+  setTimeout(()=>render(),50);
 }
 
 function showError(msg){
