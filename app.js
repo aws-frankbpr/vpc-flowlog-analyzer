@@ -96,17 +96,15 @@ async function resolveAllGeo(){
   const recs=applyFilters();
   const inbound=recs.filter(r=>isInbound(r));
   const outbound=recs.filter(r=>!isInbound(r));
-  // Collect IPs from inbound threat table
-  const threatMap=buildThreatData(inbound);
-  const pubSrcs=[...new Set(inbound.filter(r=>!r._private).map(r=>r.srcaddr))];
-  const threatIPs=pubSrcs.map(ip=>scoreSrc(ip,threatMap)).filter(s=>s&&(s.hrPorts>0||s.ports>=3||s.rejected>0)).sort((a,b)=>b.hrPorts-a.hrPorts||b.ports-a.ports||b.rejected-a.rejected).slice(0,20).map(s=>s.ip);
-  // Collect IPs from inbound top sources
-  const inMap={};inbound.filter(r=>r.action==='ACCEPT').forEach(r=>{inMap[r.srcaddr]=(inMap[r.srcaddr]||0)+r._bytes;});
+  // Collect top inbound source IPs
+  const inMap={};
+  inbound.forEach(r=>{inMap[r.srcaddr]=(inMap[r.srcaddr]||0)+1;});
   const inTopIPs=Object.entries(inMap).sort((a,b)=>b[1]-a[1]).slice(0,20).map(([ip])=>ip);
-  // Collect IPs from outbound top destinations
-  const outMap={};outbound.filter(r=>r.action==='ACCEPT').forEach(r=>{outMap[r.dstaddr]=(outMap[r.dstaddr]||0)+r._bytes;});
+  // Collect top outbound dest IPs
+  const outMap={};
+  outbound.forEach(r=>{outMap[r.dstaddr]=(outMap[r.dstaddr]||0)+r._bytes;});
   const outTopIPs=Object.entries(outMap).sort((a,b)=>b[1]-a[1]).slice(0,20).map(([ip])=>ip);
-  const allTableIPs=[...new Set([...threatIPs,...inTopIPs,...outTopIPs])].filter(ip=>!isPrivate(ip)&&!geoCache[ip]);
+  const allTableIPs=[...new Set([...inTopIPs,...outTopIPs])].filter(ip=>!isPrivate(ip)&&!geoCache[ip]);
   if(!allTableIPs.length){alert('All visible IPs already resolved!');return}
   const btn=document.getElementById('resolveAllBtn');
   if(btn){btn.disabled=true;btn.textContent=`⏳ Resolving ${allTableIPs.length} IPs...`;}
@@ -144,38 +142,9 @@ function ipOrgCell(ip){
   return g?g.org:'—';
 }
 
-// === THREAT SCORING (aligned with GuardDuty finding types & AWS Config restricted-common-ports) ===
-// References:
-//   https://docs.aws.amazon.com/guardduty/latest/ug/guardduty_finding-types-ec2.html
-//   https://docs.aws.amazon.com/config/latest/developerguide/restricted-common-ports.html
+// AWS Config restricted-common-ports reference:
+// https://docs.aws.amazon.com/config/latest/developerguide/restricted-common-ports.html
 const HIGH_RISK_PORTS={20:'FTP-Data',21:'FTP',22:'SSH',23:'Telnet',135:'RPC',137:'NetBIOS',445:'SMB',1433:'MSSQL',3306:'MySQL',3389:'RDP',4333:'Reserved',5432:'PostgreSQL',5900:'VNC',6379:'Redis',27017:'MongoDB'};
-
-function buildThreatData(recs){
-  const map={};
-  recs.forEach(r=>{
-    const ip=r.srcaddr;
-    if(!map[ip])map[ip]={ports:new Set(),portCounts:{},rejected:0,total:0,hrPorts:new Set(),synOnly:0};
-    const d=map[ip];
-    d.ports.add(r._dstport);
-    d.portCounts[r._dstport]=(d.portCounts[r._dstport]||0)+1;
-    d.total++;
-    if(r.action==='REJECT')d.rejected++;
-    if(HIGH_RISK_PORTS[r._dstport])d.hrPorts.add(r._dstport);
-    if(r._tcpflags===2)d.synOnly++;
-  });
-  return map;
-}
-
-function scoreSrc(ip,threatMap){
-  const d=threatMap[ip];
-  if(!d)return null;
-  const hasRestricted=d.hrPorts.size>0;
-  const restrictedList=[...d.hrPorts].map(p=>p+'/'+(HIGH_RISK_PORTS[p]||'')).join(', ');
-  const rejectPct=d.total?Math.round(d.rejected/d.total*100):0;
-  const synPct=d.total?Math.round(d.synOnly/d.total*100):0;
-  const topPorts=Object.entries(d.portCounts).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([p,c])=>(PORTS[p]?p+'/'+PORTS[p]:p)+' ('+c+'x)').join(', ');
-  return{ip,ports:d.ports.size,hrPorts:d.hrPorts.size,restrictedList,hasRestricted,rejected:d.rejected,total:d.total,rejectPct,synPct,topPorts};
-}
 
 // === CLASSIFY DIRECTION ===
 function isInbound(r){
@@ -225,18 +194,17 @@ function render(){
   // === INBOUND SECTION ===
   html+=`<h2 style="color:#0972d3;font-size:1.3em;border-bottom:3px solid #0972d3">⬇ Inbound Traffic (${inbound.length.toLocaleString()} flows, ${formatBytes(inbound.reduce((s,r)=>s+r._bytes,0))})</h2>`;
   html+=summaryGrid(inbound);
-  html+=threatTable(inbound);
+  html+=topSourceIPs(inbound);
   html+=topPorts(inbound,'dstport','Top Inbound Destination Ports');
   html+=geoTable(inbound,'srcaddr');
-  html+=topIPs(inbound,'srcaddr','Top Inbound Source IPs (by bytes)');
   html+=protocolBreakdown(inbound);
 
   // === OUTBOUND SECTION ===
   html+=`<h2 style="color:#ec7211;font-size:1.3em;border-bottom:3px solid #ec7211">⬆ Outbound Traffic (${outbound.length.toLocaleString()} flows, ${formatBytes(outbound.reduce((s,r)=>s+r._bytes,0))})</h2>`;
   html+=summaryGrid(outbound);
+  html+=topDestIPs(outbound);
   html+=topPorts(outbound,'dstport','Top Outbound Destination Ports');
   html+=geoTable(outbound,'dstaddr');
-  html+=topIPs(outbound,'dstaddr','Top Outbound Destination IPs (by bytes)');
   html+=protocolBreakdown(outbound);
 
   // === COMBINED ===
@@ -324,28 +292,55 @@ function eniTable(recs){
   return html+'</tbody></table></div>';
 }
 
-// === THREAT TABLE ===
-function threatTable(recs){
-  const threatMap=buildThreatData(recs);
-  const pubSrcs=[...new Set(recs.filter(r=>!r._private).map(r=>r.srcaddr))];
-  const scored=pubSrcs.map(ip=>scoreSrc(ip,threatMap)).filter(s=>s&&(s.hrPorts>0||s.ports>=3||s.rejected>0));
-  // Sort: restricted ports first, then by total ports, then by rejected
-  scored.sort((a,b)=>b.hrPorts-a.hrPorts||b.ports-a.ports||b.rejected-a.rejected);
-  const top=scored.slice(0,20);
-  if(!top.length)return'';
-  let html=`<h2>🎯 Source IP Activity — <a href="https://docs.aws.amazon.com/config/latest/developerguide/restricted-common-ports.html">AWS Config Restricted Ports</a> Analysis</h2>
-  <p class="sub">Top 20 of ${scored.length} public IPs that targeted <code>restricted-common-ports</code> or contacted 3+ unique ports. For threat detection, enable <a href="https://docs.aws.amazon.com/guardduty/latest/ug/what-is-guardduty.html">Amazon GuardDuty</a>.</p>
-  <div class="tw"><table><thead><tr><th>Source IP</th><th>Country</th><th>Org</th><th>Unique Ports</th><th>Restricted Ports Hit</th><th>Total Flows</th><th>Accepted</th><th>Rejected</th><th>Reject %</th><th>SYN-only %</th></tr></thead><tbody>`;
-  top.forEach(s=>{
-    const rCls=s.rejectPct>70?'cr':s.rejectPct>30?'wa':'ok';
-    const accepted=s.total-s.rejected;
-    html+=`<tr>
-    <td><b>${s.ip}</b></td><td>${ipGeoCell(s.ip)}</td><td>${ipOrgCell(s.ip)}</td>
-    <td>${s.ports.toLocaleString()}</td>
-    <td>${s.hasRestricted?'<span class="t cr">'+s.restrictedList+'</span>':'—'}</td>
-    <td>${s.total.toLocaleString()}</td><td>${accepted.toLocaleString()}</td><td>${s.rejected.toLocaleString()}</td>
-    <td><span class="t ${rCls}">${s.rejectPct}%</span></td>
-    <td>${s.synPct?s.synPct+'%':'—'}</td></tr>`;
+// === TOP INBOUND SOURCE IPs (combined: bytes + ports + restricted) ===
+function topSourceIPs(recs){
+  const map={};
+  recs.forEach(r=>{
+    const ip=r.srcaddr;
+    if(!map[ip])map[ip]={bytes:0,flows:0,accepted:0,rejected:0,ports:new Set(),hrPorts:new Set(),synOnly:0};
+    const d=map[ip];
+    d.flows++;d.bytes+=r._bytes;
+    r.action==='ACCEPT'?d.accepted++:d.rejected++;
+    d.ports.add(r._dstport);
+    if(HIGH_RISK_PORTS[r._dstport])d.hrPorts.add(r._dstport);
+    if(r._tcpflags===2)d.synOnly++;
+  });
+  const sorted=Object.entries(map).sort((a,b)=>b[1].flows-a[1].flows).slice(0,20);
+  if(!sorted.length)return'';
+  let html=`<h3>🎯 Top 20 Inbound Source IPs — of ${Object.keys(map).length} (<a href="https://docs.aws.amazon.com/config/latest/developerguide/restricted-common-ports.html">AWS Config Restricted Ports</a> flagged)</h3>
+  <div class="tw"><table><thead><tr><th>Source IP</th><th>Country</th><th>Org</th><th>Flows</th><th>Accepted</th><th>Rejected</th><th>Bytes</th><th>Unique Ports</th><th>Restricted Ports Hit</th><th>SYN-only %</th></tr></thead><tbody>`;
+  sorted.forEach(([ip,d])=>{
+    const rp=d.flows?Math.round(d.rejected/d.flows*100):0;
+    const sp=d.flows?Math.round(d.synOnly/d.flows*100):0;
+    const rList=[...d.hrPorts].map(p=>p+'/'+(HIGH_RISK_PORTS[p]||'')).join(', ');
+    html+=`<tr><td><b>${ip}</b></td><td>${ipGeoCell(ip)}</td><td>${ipOrgCell(ip)}</td>
+    <td>${d.flows.toLocaleString()}</td><td>${d.accepted.toLocaleString()}</td><td>${d.rejected.toLocaleString()}</td>
+    <td>${formatBytes(d.bytes)}</td><td>${d.ports.size.toLocaleString()}</td>
+    <td>${d.hrPorts.size?'<span class="t cr">'+rList+'</span>':'—'}</td>
+    <td>${sp?sp+'%':'—'}</td></tr>`;
+  });
+  return html+'</tbody></table></div>';
+}
+
+// === TOP OUTBOUND DESTINATION IPs (combined: bytes + ports) ===
+function topDestIPs(recs){
+  const map={};
+  recs.forEach(r=>{
+    const ip=r.dstaddr;
+    if(!map[ip])map[ip]={bytes:0,flows:0,accepted:0,rejected:0,ports:new Set()};
+    const d=map[ip];
+    d.flows++;d.bytes+=r._bytes;
+    r.action==='ACCEPT'?d.accepted++:d.rejected++;
+    d.ports.add(r._dstport);
+  });
+  const sorted=Object.entries(map).sort((a,b)=>b[1].bytes-a[1].bytes).slice(0,20);
+  if(!sorted.length)return'';
+  let html=`<h3>🎯 Top 20 Outbound Destination IPs — of ${Object.keys(map).length}</h3>
+  <div class="tw"><table><thead><tr><th>Destination IP</th><th>Country</th><th>Org</th><th>Flows</th><th>Accepted</th><th>Rejected</th><th>Bytes</th><th>Unique Ports</th></tr></thead><tbody>`;
+  sorted.forEach(([ip,d])=>{
+    html+=`<tr><td><b>${ip}</b></td><td>${ipGeoCell(ip)}</td><td>${ipOrgCell(ip)}</td>
+    <td>${d.flows.toLocaleString()}</td><td>${d.accepted.toLocaleString()}</td><td>${d.rejected.toLocaleString()}</td>
+    <td>${formatBytes(d.bytes)}</td><td>${d.ports.size.toLocaleString()}</td></tr>`;
   });
   return html+'</tbody></table></div>';
 }
@@ -390,21 +385,6 @@ function topPorts(recs,portField,title){
   return html+'</tbody></table></div>';
 }
 
-// === TOP IPs (reusable, by bytes) ===
-function topIPs(recs,ipField,title){
-  const acc=recs.filter(r=>r.action==='ACCEPT');
-  const map={};
-  acc.forEach(r=>{const ip=r[ipField];if(!map[ip])map[ip]={flows:0,bytes:0};map[ip].flows++;map[ip].bytes+=r._bytes;});
-  const sorted=Object.entries(map).sort((a,b)=>b[1].bytes-a[1].bytes);
-  const top=sorted.slice(0,20);
-  if(!top.length)return'';
-  let html=`<h3>📈 ${title} — Top 20 of ${sorted.length}</h3><div class="tw"><table><thead><tr><th>IP</th><th>Country</th><th>Org</th><th>Flows</th><th>Bytes</th></tr></thead><tbody>`;
-  top.forEach(([ip,d])=>{
-    html+=`<tr><td><b>${ip}</b></td><td>${ipGeoCell(ip)}</td><td>${ipOrgCell(ip)}</td><td>${d.flows.toLocaleString()}</td><td>${formatBytes(d.bytes)}</td></tr>`;
-  });
-  return html+'</tbody></table></div>';
-}
-
 // === PROTOCOL BREAKDOWN ===
 function protocolBreakdown(recs){
   const map={};
@@ -434,4 +414,4 @@ function timeline(recs){
   return html+'</tbody></table></div>';
 }
 
-// (topTalkers replaced by reusable topIPs function above)
+// (old topIPs/topTalkers replaced by topSourceIPs/topDestIPs)
