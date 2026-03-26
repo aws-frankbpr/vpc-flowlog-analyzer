@@ -322,13 +322,15 @@ function topSourceIPs(recs){
   return html+'</tbody></table></div>';
 }
 
-// === TOP OUTBOUND DESTINATION IPs (public only — internal VPC traffic is normal) ===
+// === TOP OUTBOUND DESTINATION IPs (exclude self-traffic only) ===
 function topDestIPs(recs){
+  // Collect IPs that belong to this ENI/instance (self IPs)
+  const selfIPs=new Set(allRecords.flatMap(r=>[r.srcaddr,r.dstaddr]).filter(ip=>isPrivate(ip)&&ip!=='0.0.0.0'));
   const map={};
   recs.forEach(r=>{
     const ip=r.dstaddr;
-    if(isPrivate(ip))return; // Skip internal VPC traffic
-    if(!map[ip])map[ip]={bytes:0,flows:0,accepted:0,rejected:0,ports:new Set()};
+    if(selfIPs.has(ip)&&selfIPs.has(r.srcaddr))return; // Skip self-to-self traffic
+    if(!map[ip])map[ip]={bytes:0,flows:0,accepted:0,rejected:0,ports:new Set(),isPrivate:isPrivate(ip)};
     const d=map[ip];
     d.flows++;d.bytes+=r._bytes;
     r.action==='ACCEPT'?d.accepted++:d.rejected++;
@@ -336,11 +338,11 @@ function topDestIPs(recs){
   });
   const sorted=Object.entries(map).sort((a,b)=>b[1].bytes-a[1].bytes).slice(0,20);
   if(!sorted.length)return'';
-  let html=`<h3>🎯 Top 20 Outbound Destination IPs (public) — of ${Object.keys(map).length}</h3>
-  <p class="sub">Internal VPC traffic (RFC1918) excluded — private IP communication is expected behavior per <a href="https://docs.aws.amazon.com/vpc/latest/userguide/flow-logs-records-examples.html">AWS VPC Flow Log docs</a>.</p>
+  let html=`<h3>🎯 Top 20 Outbound Destination IPs — of ${Object.keys(map).length}</h3>
+  <p class="sub">Self-traffic excluded. Private IPs may indicate cross-subnet or cross-VPC communication.</p>
   <div class="tw"><table><thead><tr><th>Destination IP</th><th>Country</th><th>Org</th><th>Flows</th><th>Accepted</th><th>Rejected</th><th>Bytes</th><th>Unique Ports</th></tr></thead><tbody>`;
   sorted.forEach(([ip,d])=>{
-    html+=`<tr><td><b>${ip}</b></td><td>${ipGeoCell(ip)}</td><td>${ipOrgCell(ip)}</td>
+    html+=`<tr><td><b>${ip}</b> ${d.isPrivate?'<span class="t in">VPC</span>':''}</td><td>${ipGeoCell(ip)}</td><td>${ipOrgCell(ip)}</td>
     <td>${d.flows.toLocaleString()}</td><td>${d.accepted.toLocaleString()}</td><td>${d.rejected.toLocaleString()}</td>
     <td>${formatBytes(d.bytes)}</td><td>${d.ports.size.toLocaleString()}</td></tr>`;
   });
