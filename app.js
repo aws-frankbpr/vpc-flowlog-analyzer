@@ -332,14 +332,15 @@ function threatTable(recs){
   if(!top.length)return'';
   let html=`<h2>🎯 Source IP Activity — <a href="https://docs.aws.amazon.com/config/latest/developerguide/restricted-common-ports.html">AWS Config Restricted Ports</a> Analysis</h2>
   <p class="sub">Top 20 of ${scored.length} public IPs that targeted <code>restricted-common-ports</code> or contacted 3+ unique ports. For threat detection, enable <a href="https://docs.aws.amazon.com/guardduty/latest/ug/what-is-guardduty.html">Amazon GuardDuty</a>.</p>
-  <div class="tw"><table><thead><tr><th>Source IP</th><th>Country</th><th>Org</th><th>Unique Ports</th><th>Restricted Ports Hit</th><th>Total Flows</th><th>Rejected</th><th>Reject %</th><th>SYN-only %</th></tr></thead><tbody>`;
+  <div class="tw"><table><thead><tr><th>Source IP</th><th>Country</th><th>Org</th><th>Unique Ports</th><th>Restricted Ports Hit</th><th>Total Flows</th><th>Accepted</th><th>Rejected</th><th>Reject %</th><th>SYN-only %</th></tr></thead><tbody>`;
   top.forEach(s=>{
     const rCls=s.rejectPct>70?'cr':s.rejectPct>30?'wa':'ok';
+    const accepted=s.total-s.rejected;
     html+=`<tr>
     <td><b>${s.ip}</b></td><td>${ipGeoCell(s.ip)}</td><td>${ipOrgCell(s.ip)}</td>
     <td>${s.ports.toLocaleString()}</td>
     <td>${s.hasRestricted?'<span class="t cr">'+s.restrictedList+'</span>':'—'}</td>
-    <td>${s.total.toLocaleString()}</td><td>${s.rejected.toLocaleString()}</td>
+    <td>${s.total.toLocaleString()}</td><td>${accepted.toLocaleString()}</td><td>${s.rejected.toLocaleString()}</td>
     <td><span class="t ${rCls}">${s.rejectPct}%</span></td>
     <td>${s.synPct?s.synPct+'%':'—'}</td></tr>`;
   });
