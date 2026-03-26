@@ -1,7 +1,7 @@
 // === CONSTANTS ===
 const PORTS={21:'FTP',22:'SSH',23:'Telnet',25:'SMTP',53:'DNS',80:'HTTP',110:'POP3',135:'RPC',137:'NetBIOS',143:'IMAP',443:'HTTPS',445:'SMB',993:'IMAPS',1433:'MSSQL',1521:'Oracle',3306:'MySQL',3389:'RDP',5432:'PostgreSQL',5900:'VNC',6379:'Redis',8080:'HTTP-Alt',8443:'HTTPS-Alt',27017:'MongoDB'};
 const PROTOS={1:'ICMP',6:'TCP',17:'UDP',47:'GRE',50:'ESP'};
-const HIGH_RISK=[22,23,135,137,445,1433,3306,3389,5432,5900,6379,27017];
+
 const V2_FIELDS=['version','account-id','interface-id','srcaddr','dstaddr','srcport','dstport','protocol','packets','bytes','start','end','action','log-status'];
 const RFC1918=[{s:0x0A000000,m:0xFF000000},{s:0xAC100000,m:0xFFF00000},{s:0xC0A80000,m:0xFFFF0000}];
 
@@ -157,7 +157,12 @@ function ipOrgCell(ip){
   return g?g.org:'—';
 }
 
-// === THREAT SCORING (pre-computed) ===
+// === THREAT SCORING (aligned with GuardDuty finding types & AWS Config restricted-common-ports) ===
+// References:
+//   https://docs.aws.amazon.com/guardduty/latest/ug/guardduty_finding-types-ec2.html
+//   https://docs.aws.amazon.com/config/latest/developerguide/restricted-common-ports.html
+const HIGH_RISK_PORTS={20:'FTP-Data',21:'FTP',22:'SSH',23:'Telnet',135:'RPC',137:'NetBIOS',445:'SMB',1433:'MSSQL',3306:'MySQL',3389:'RDP',4333:'Reserved',5432:'PostgreSQL',5900:'VNC',6379:'Redis',27017:'MongoDB'};
+
 function buildThreatData(recs){
   const map={};
   recs.forEach(r=>{
@@ -167,7 +172,7 @@ function buildThreatData(recs){
     d.ports.add(r._dstport);
     d.total++;
     if(r.action==='REJECT')d.rejected++;
-    if(HIGH_RISK.includes(r._dstport))d.hrPorts.add(r._dstport);
+    if(HIGH_RISK_PORTS[r._dstport])d.hrPorts.add(r._dstport);
     if(r._tcpflags===2)d.synOnly++;
   });
   return map;
@@ -175,18 +180,46 @@ function buildThreatData(recs){
 
 function scoreSrc(ip,threatMap){
   const d=threatMap[ip];
-  if(!d)return{score:0,label:'🟢 NORMAL',cls:'ok',ports:0,rejected:0,total:0,hrPorts:0,synOnly:0};
+  if(!d)return{score:0,label:'—',cls:'ok',finding:'',ports:0,rejected:0,total:0,hrPorts:0,synOnly:0};
   let score=0;
+  // Multiple ports = Recon:EC2/Portscan pattern
   if(d.ports.size>=6)score+=40;else if(d.ports.size>=3)score+=20;
+  // AWS Config restricted ports targeted
   if(d.hrPorts.size>=3)score+=25;else if(d.hrPorts.size>=1)score+=10;
+  // High reject ratio = Recon:EC2/PortProbeUnprotectedPort pattern
   if(d.total>0&&d.rejected/d.total>0.8)score+=20;
+  // SYN-only without handshake = stealth scan
   if(d.synOnly>0&&d.synOnly/d.total>0.7)score+=15;
   score=Math.min(score,100);
-  let label='🟢 NORMAL',cls='ok';
-  if(score>=70){label='🔴 PORT SCANNER';cls='cr';}
-  else if(score>=50){label='🟠 SUSPICIOUS';cls='wa';}
-  else if(score>=30){label='🟡 MONITOR';cls='wa';}
-  return{score,label,cls,ports:d.ports.size,rejected:d.rejected,total:d.total,hrPorts:d.hrPorts.size,synOnly:d.synOnly};
+
+  // Labels aligned with GuardDuty finding type naming
+  let label,cls,finding;
+  if(score>=70){
+    label='🔴 Recon:Portscan';cls='cr';
+    finding='Pattern consistent with <a href="https://docs.aws.amazon.com/guardduty/latest/ug/guardduty_finding-types-ec2.html#recon-ec2-portscan">Recon:EC2/Portscan</a>';
+  }else if(score>=50){
+    label='🟠 Recon:PortProbe';cls='wa';
+    finding='Pattern consistent with <a href="https://docs.aws.amazon.com/guardduty/latest/ug/guardduty_finding-types-ec2.html#recon-ec2-portprobeunprotectedport">Recon:EC2/PortProbeUnprotectedPort</a>';
+  }else if(score>=30){
+    label='🟡 Unusual Activity';cls='wa';
+    finding='Pattern consistent with <a href="https://docs.aws.amazon.com/guardduty/latest/ug/guardduty_finding-types-ec2.html#behavior-ec2-networkportunusual">Behavior:EC2/NetworkPortUnusual</a>';
+  }else{
+    label='🟢 Normal';cls='ok';finding='';
+  }
+
+  // SSH/RDP brute force detection
+  if(d.hrPorts.has(22)&&d.total>=10){
+    label='🔴 SSHBruteForce';cls='cr';
+    finding='Pattern consistent with <a href="https://docs.aws.amazon.com/guardduty/latest/ug/guardduty_finding-types-ec2.html#unauthorizedaccess-ec2-sshbruteforce">UnauthorizedAccess:EC2/SSHBruteForce</a>';
+    score=Math.max(score,80);
+  }
+  if(d.hrPorts.has(3389)&&d.total>=10){
+    label='🔴 RDPBruteForce';cls='cr';
+    finding='Pattern consistent with <a href="https://docs.aws.amazon.com/guardduty/latest/ug/guardduty_finding-types-ec2.html#unauthorizedaccess-ec2-rdpbruteforce">UnauthorizedAccess:EC2/RDPBruteForce</a>';
+    score=Math.max(score,80);
+  }
+
+  return{score,label,cls,finding,ports:d.ports.size,rejected:d.rejected,total:d.total,hrPorts:d.hrPorts.size,synOnly:d.synOnly};
 }
 
 // === RENDER ===
@@ -320,13 +353,14 @@ function threatTable(recs){
   const pubSrcs=[...new Set(recs.filter(r=>!r._private).map(r=>r.srcaddr))];
   const scored=pubSrcs.map(ip=>{const s=scoreSrc(ip,threatMap);return{ip,...s};}).filter(s=>s.score>=30).sort((a,b)=>b.score-a.score).slice(0,25);
   if(!scored.length)return'';
-  let html=`<h2>🎯 Top Threat Sources — Ranked by Threat Score</h2>
-  <p class="sub">Scored 0-100 based on: ports targeted, high-risk ports hit, reject ratio, SYN-only patterns.</p>
-  <div class="tw"><table><thead><tr><th>Score</th><th>Threat</th><th>Source IP</th><th>Country</th><th>Org</th><th>Ports Hit</th><th>High-Risk</th><th>Flows</th><th>Rejected</th></tr></thead><tbody>`;
+  let html=`<h2>🎯 Threat Analysis — Aligned with <a href="https://docs.aws.amazon.com/guardduty/latest/ug/guardduty_finding-types-ec2.html">GuardDuty Finding Types</a></h2>
+  <p class="sub">Scored 0-100 based on: ports targeted (<a href="https://docs.aws.amazon.com/guardduty/latest/ug/guardduty_finding-types-ec2.html#recon-ec2-portscan">Recon:EC2/Portscan</a>), 
+  <a href="https://docs.aws.amazon.com/config/latest/developerguide/restricted-common-ports.html">AWS Config restricted ports</a> hit, reject ratio, SYN-only patterns. Labels map to equivalent GuardDuty finding types.</p>
+  <div class="tw"><table><thead><tr><th>Score</th><th>GuardDuty Pattern</th><th>Source IP</th><th>Country</th><th>Org</th><th>Ports</th><th>Restricted Ports</th><th>Flows</th><th>Rejected</th><th>Reference</th></tr></thead><tbody>`;
   scored.forEach(s=>{
     html+=`<tr><td><span class="t ${s.cls}">${s.score}</span></td><td><span class="t ${s.cls}">${s.label}</span></td>
     <td><b>${s.ip}</b></td><td>${ipGeoCell(s.ip)}</td><td>${ipOrgCell(s.ip)}</td>
-    <td>${s.ports}</td><td>${s.hrPorts}</td><td>${s.total.toLocaleString()}</td><td>${s.rejected.toLocaleString()}</td></tr>`;
+    <td>${s.ports}</td><td>${s.hrPorts}</td><td>${s.total.toLocaleString()}</td><td>${s.rejected.toLocaleString()}</td><td style="font-size:.7em">${s.finding||'—'}</td></tr>`;
   });
   return html+'</tbody></table></div>';
 }
