@@ -105,9 +105,10 @@ async function resolveIP(ip,btnId){
   if(btn)btn.textContent='⏳';
   if(!geoCache[ip]){
     try{
-      const r=await fetch('https://freeipapi.com/api/json/'+ip);
+      const r=await fetch('https://corsproxy.io/?url='+encodeURIComponent('http://ip-api.com/json/'+ip+'?fields=status,query,country,countryCode,org,isp'));
       const d=await r.json();
-      if(d.countryCode)geoCache[ip]={country:d.countryName||'Unknown',cc:d.countryCode||'??',org:d.regionName||'Unknown'};
+      if(d.status==='success')geoCache[ip]={country:d.country,cc:d.countryCode,org:d.org||d.isp||'Unknown'};
+      else if(btn)btn.textContent='❌';
     }catch(e){if(btn)btn.textContent='❌';}
   }
   render();
