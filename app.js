@@ -76,16 +76,7 @@ function parseAndRender(text){
     allRecords.push(r);
   }
   if(!allRecords.length){showError('No valid flow records found');return}
-  // Collect unique public IPs for GeoIP (both src and dst)
-  const pubIPs=[...new Set(allRecords.flatMap(r=>[r.srcaddr,r.dstaddr]).filter(ip=>!isPrivate(ip)))];
-  // Show results immediately, then enrich with GeoIP
   render();
-  if(pubIPs.length>0){
-    document.getElementById('loading').innerHTML=`⏳ Enriching ${pubIPs.length} IPs with GeoIP... <button onclick="skipGeo()" style="margin-left:12px;padding:4px 12px;background:#5f6b7a;color:#fff;border:none;border-radius:4px;cursor:pointer">Skip GeoIP</button>`;
-    document.getElementById('loading').classList.add('show');
-    window._skipGeo=false;
-    lookupGeo(pubIPs).then(()=>{if(!window._skipGeo)render();});
-  }
 }
 
 function showError(msg){
@@ -93,36 +84,62 @@ function showError(msg){
   document.getElementById('results').style.display='block';
   document.getElementById('results').innerHTML=`<div class="card" style="border-left-color:#d13212"><b>Error:</b> ${msg}</div>`;
 }
-function skipGeo(){window._skipGeo=true;document.getElementById('loading').classList.remove('show');}
 
-// === GEOIP LOOKUP (ipwho.is HTTPS, 50 parallel) ===
-async function lookupGeo(ips){
-  if(window._skipGeo)return;
-  let done=0;
+// === GEOIP ===
+async function resolveOneIP(ip){
+  if(geoCache[ip])return;
+  try{
+    const r=await fetch('https://ipwho.is/'+ip);
+    const d=await r.json();
+    if(d.success!==false)geoCache[ip]={country:d.country||'Unknown',cc:d.country_code||'??',org:d.connection?.org||d.connection?.isp||'Unknown'};
+  }catch(e){}
+}
+// Called from inline button
+async function resolveIP(ip,btnId){
+  const btn=document.getElementById(btnId);
+  if(btn)btn.textContent='⏳';
+  await resolveOneIP(ip);
+  render();
+}
+// Resolve all public IPs
+async function resolveAllGeo(){
+  const pubIPs=[...new Set(allRecords.flatMap(r=>[r.srcaddr,r.dstaddr]).filter(ip=>!isPrivate(ip)&&!geoCache[ip]))];
+  if(!pubIPs.length){alert('All IPs already resolved!');return}
+  const btn=document.getElementById('resolveAllBtn');
+  if(btn)btn.disabled=true;
+  window._skipGeo=false;
   const chunks=[];
-  for(let i=0;i<ips.length;i+=50)chunks.push(ips.slice(i,i+50));
+  for(let i=0;i<pubIPs.length;i+=50)chunks.push(pubIPs.slice(i,i+50));
+  let done=0;
   for(const chunk of chunks){
-    if(window._skipGeo)return;
-    await Promise.all(chunk.map(async ip=>{
-      try{
-        const r=await fetch('https://ipwho.is/'+ip);
-        const d=await r.json();
-        if(d.success!==false)geoCache[ip]={country:d.country||'Unknown',cc:d.country_code||'??',org:d.connection?.org||d.connection?.isp||'Unknown'};
-      }catch(e){}
-    }));
+    if(window._skipGeo)break;
+    await Promise.all(chunk.map(ip=>resolveOneIP(ip)));
     done+=chunk.length;
-    document.getElementById('loading').innerHTML=`⏳ GeoIP: ${done}/${ips.length} IPs... <button onclick="skipGeo()" style="margin-left:12px;padding:4px 12px;background:#5f6b7a;color:#fff;border:none;border-radius:4px;cursor:pointer">Skip & use what we have</button>`;
+    if(btn)btn.textContent=`⏳ ${done}/${pubIPs.length}...`;
     await new Promise(r=>setTimeout(r,100));
   }
+  render();
 }
+function skipGeo(){window._skipGeo=true;render();}
 
 function geoFor(ip){
   if(isPrivate(ip))return{country:'Private',cc:'🏠',org:'RFC1918'};
-  return geoCache[ip]||{country:'Unknown',cc:'??',org:'Unknown'};
+  return geoCache[ip]||null;
 }
 function flag(cc){
   if(cc==='🏠')return'🏠';if(!cc||cc==='??')return'🌐';
   return String.fromCodePoint(...[...cc.toUpperCase()].map(c=>0x1F1E6+c.charCodeAt(0)-65));
+}
+let _btnId=0;
+function ipGeoCell(ip){
+  const g=geoFor(ip);
+  if(g)return`${flag(g.cc)} ${g.country}`;
+  const id='gb'+(_btnId++);
+  return`<button id="${id}" onclick="resolveIP('${ip}','${id}')" style="padding:1px 6px;font-size:.7em;border:1px solid #aab7b8;border-radius:4px;background:#fff;cursor:pointer" title="Lookup GeoIP">🔍</button>`;
+}
+function ipOrgCell(ip){
+  const g=geoFor(ip);
+  return g?g.org:'—';
 }
 
 // === THREAT SCORING ===
@@ -148,6 +165,7 @@ function scoreSrc(ip,records){
 
 // === RENDER ===
 function render(){
+  _btnId=0;
   const R=document.getElementById('results');
   const recs=applyFilters();
   const total=recs.length;
@@ -187,6 +205,7 @@ function render(){
     <label>Search IP:</label><input id="fSearch" placeholder="e.g. 10.0.1.">
     <button onclick="applyAndRender()">Apply</button>
     <button onclick="resetFilters()" style="background:#5f6b7a">Reset</button>
+    <button id="resolveAllBtn" onclick="resolveAllGeo()" style="background:#ec7211">🌍 Resolve All GeoIP</button>
   </div>
   <div class="grid">
     <div class="s in"><div class="n">${total.toLocaleString()}</div><div class="l">Total Flows</div></div>
@@ -272,14 +291,14 @@ function eniTable(recs){
 // === THREAT TABLE ===
 function threatTable(recs){
   const pubSrcs=[...new Set(recs.filter(r=>!r._private).map(r=>r.srcaddr))];
-  const scored=pubSrcs.map(ip=>{const s=scoreSrc(ip,recs);const g=geoFor(ip);return{ip,...s,...g};}).filter(s=>s.score>=30).sort((a,b)=>b.score-a.score).slice(0,25);
+  const scored=pubSrcs.map(ip=>{const s=scoreSrc(ip,recs);return{ip,...s};}).filter(s=>s.score>=30).sort((a,b)=>b.score-a.score).slice(0,25);
   if(!scored.length)return'';
   let html=`<h2>🎯 Top Threat Sources — Ranked by Threat Score</h2>
   <p class="sub">Scored 0-100 based on: ports targeted, high-risk ports hit, reject ratio, SYN-only patterns.</p>
   <div class="tw"><table><thead><tr><th>Score</th><th>Threat</th><th>Source IP</th><th>Country</th><th>Org</th><th>Ports Hit</th><th>High-Risk</th><th>Flows</th><th>Rejected</th></tr></thead><tbody>`;
   scored.forEach(s=>{
     html+=`<tr><td><span class="t ${s.cls}">${s.score}</span></td><td><span class="t ${s.cls}">${s.label}</span></td>
-    <td><b>${s.ip}</b></td><td>${flag(s.cc)} ${s.country}</td><td>${s.org}</td>
+    <td><b>${s.ip}</b></td><td>${ipGeoCell(s.ip)}</td><td>${ipOrgCell(s.ip)}</td>
     <td>${s.ports}</td><td>${s.hrPorts}</td><td>${s.total.toLocaleString()}</td><td>${s.rejected.toLocaleString()}</td></tr>`;
   });
   return html+'</tbody></table></div>';
@@ -291,8 +310,8 @@ function geoTable(recs){
   const map={};
   inbound.forEach(r=>{
     const g=geoFor(r.srcaddr);
-    const k=g.cc+'|'+g.country;
-    if(!map[k])map[k]={country:g.country,cc:g.cc,accept:0,reject:0,ips:new Set()};
+    const k=g?g.cc+'|'+g.country:'??|Not resolved';
+    if(!map[k])map[k]={country:g?g.country:'Not resolved',cc:g?g.cc:'??',accept:0,reject:0,ips:new Set()};
     r.action==='ACCEPT'?map[k].accept++:map[k].reject++;
     map[k].ips.add(r.srcaddr);
   });
@@ -359,8 +378,7 @@ function topTalkers(recs){
   if(!sorted.length)return'';
   let html=`<h2>📈 Top Talkers (by bytes)</h2><div class="tw"><table><thead><tr><th>Source IP</th><th>Country</th><th>Org</th><th>Flows</th><th>Bytes</th></tr></thead><tbody>`;
   sorted.forEach(([ip,d])=>{
-    const g=geoFor(ip);
-    html+=`<tr><td><b>${ip}</b></td><td>${flag(g.cc)} ${g.country}</td><td>${g.org}</td><td>${d.flows.toLocaleString()}</td><td>${formatBytes(d.bytes)}</td></tr>`;
+    html+=`<tr><td><b>${ip}</b></td><td>${ipGeoCell(ip)}</td><td>${ipOrgCell(ip)}</td><td>${d.flows.toLocaleString()}</td><td>${formatBytes(d.bytes)}</td></tr>`;
   });
   return html+'</tbody></table></div>';
 }
