@@ -147,25 +147,36 @@ function ipOrgCell(ip){
   return g?g.org:'—';
 }
 
-// === THREAT SCORING ===
-function scoreSrc(ip,records){
-  const flows=records.filter(r=>r.srcaddr===ip);
-  const ports=new Set(flows.map(r=>r._dstport));
-  const rejected=flows.filter(r=>r.action==='REJECT').length;
-  const total=flows.length;
-  const hrPorts=[...ports].filter(p=>HIGH_RISK.includes(p)).length;
-  const synOnly=flows.filter(r=>r._tcpflags===2).length;
+// === THREAT SCORING (pre-computed) ===
+function buildThreatData(recs){
+  const map={};
+  recs.forEach(r=>{
+    const ip=r.srcaddr;
+    if(!map[ip])map[ip]={ports:new Set(),rejected:0,total:0,hrPorts:new Set(),synOnly:0};
+    const d=map[ip];
+    d.ports.add(r._dstport);
+    d.total++;
+    if(r.action==='REJECT')d.rejected++;
+    if(HIGH_RISK.includes(r._dstport))d.hrPorts.add(r._dstport);
+    if(r._tcpflags===2)d.synOnly++;
+  });
+  return map;
+}
+
+function scoreSrc(ip,threatMap){
+  const d=threatMap[ip];
+  if(!d)return{score:0,label:'🟢 NORMAL',cls:'ok',ports:0,rejected:0,total:0,hrPorts:0,synOnly:0};
   let score=0;
-  if(ports.size>=6)score+=40;else if(ports.size>=3)score+=20;
-  if(hrPorts>=3)score+=25;else if(hrPorts>=1)score+=10;
-  if(total>0&&rejected/total>0.8)score+=20;
-  if(synOnly>0&&synOnly/total>0.7)score+=15;
+  if(d.ports.size>=6)score+=40;else if(d.ports.size>=3)score+=20;
+  if(d.hrPorts.size>=3)score+=25;else if(d.hrPorts.size>=1)score+=10;
+  if(d.total>0&&d.rejected/d.total>0.8)score+=20;
+  if(d.synOnly>0&&d.synOnly/d.total>0.7)score+=15;
   score=Math.min(score,100);
   let label='🟢 NORMAL',cls='ok';
   if(score>=70){label='🔴 PORT SCANNER';cls='cr';}
   else if(score>=50){label='🟠 SUSPICIOUS';cls='wa';}
   else if(score>=30){label='🟡 MONITOR';cls='wa';}
-  return{score,label,cls,ports:ports.size,rejected,total,hrPorts,synOnly};
+  return{score,label,cls,ports:d.ports.size,rejected:d.rejected,total:d.total,hrPorts:d.hrPorts.size,synOnly:d.synOnly};
 }
 
 // === RENDER ===
@@ -184,7 +195,7 @@ function render(){
   const minT=Math.min(...starts),maxT=Math.max(...ends);
   const timeRange=minT&&maxT?`${new Date(minT*1000).toISOString().slice(0,19)}Z → ${new Date(maxT*1000).toISOString().slice(0,19)}Z`:'Unknown';
   const rejectPct=total?Math.round(rejected/total*100):0;
-  const countries=new Set(recs.filter(r=>!r._private).map(r=>geoFor(r.srcaddr).country)).size;
+  const countries=new Set(recs.filter(r=>!r._private).map(r=>{const g=geoFor(r.srcaddr);return g?g.country:'?';}).filter(c=>c!=='?')).size;
 
   // ENI / VPC / Subnet context
   const enis=[...new Set(recs.map(r=>r['interface-id']).filter(Boolean).filter(v=>v!=='-'))];
@@ -295,8 +306,9 @@ function eniTable(recs){
 
 // === THREAT TABLE ===
 function threatTable(recs){
+  const threatMap=buildThreatData(recs);
   const pubSrcs=[...new Set(recs.filter(r=>!r._private).map(r=>r.srcaddr))];
-  const scored=pubSrcs.map(ip=>{const s=scoreSrc(ip,recs);return{ip,...s};}).filter(s=>s.score>=30).sort((a,b)=>b.score-a.score).slice(0,25);
+  const scored=pubSrcs.map(ip=>{const s=scoreSrc(ip,threatMap);return{ip,...s};}).filter(s=>s.score>=30).sort((a,b)=>b.score-a.score).slice(0,25);
   if(!scored.length)return'';
   let html=`<h2>🎯 Top Threat Sources — Ranked by Threat Score</h2>
   <p class="sub">Scored 0-100 based on: ports targeted, high-risk ports hit, reject ratio, SYN-only patterns.</p>
