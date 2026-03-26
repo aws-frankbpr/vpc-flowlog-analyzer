@@ -192,7 +192,7 @@ function scoreSrc(ip,threatMap){
   const restrictedList=[...d.hrPorts].map(p=>p+'/'+(HIGH_RISK_PORTS[p]||'')).join(', ');
   const rejectPct=d.total?Math.round(d.rejected/d.total*100):0;
   const synPct=d.total?Math.round(d.synOnly/d.total*100):0;
-  const topPorts=Object.entries(d.portCounts).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([p])=>PORTS[p]?p+'/'+PORTS[p]:p).join(', ');
+  const topPorts=Object.entries(d.portCounts).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([p,c])=>(PORTS[p]?p+'/'+PORTS[p]:p)+' ('+c+'x)').join(', ');
   return{ip,ports:d.ports.size,hrPorts:d.hrPorts.size,restrictedList,hasRestricted,rejected:d.rejected,total:d.total,rejectPct,synPct,topPorts};
 }
 
@@ -332,7 +332,7 @@ function threatTable(recs){
   if(!top.length)return'';
   let html=`<h2>🎯 Source IP Activity — <a href="https://docs.aws.amazon.com/config/latest/developerguide/restricted-common-ports.html">AWS Config Restricted Ports</a> Analysis</h2>
   <p class="sub">Top 20 of ${scored.length} IPs that targeted <code>restricted-common-ports</code> (20, 21, 22, 23, 3389, 3306, etc.) or contacted 3+ distinct ports. Data only — no severity assigned. For threat detection, enable <a href="https://docs.aws.amazon.com/guardduty/latest/ug/what-is-guardduty.html">Amazon GuardDuty</a>.</p>
-  <div class="tw"><table><thead><tr><th>Source IP</th><th>Country</th><th>Org</th><th>Total Dest Ports</th><th>Top 5 Ports</th><th>Restricted Ports Hit</th><th>Flows</th><th>Rejected</th><th>Reject %</th><th>SYN-only %</th></tr></thead><tbody>`;
+  <div class="tw"><table><thead><tr><th>Source IP</th><th>Country</th><th>Org</th><th>Unique Ports Contacted</th><th>Most Contacted Ports (count)</th><th>Restricted Ports Hit</th><th>Flows</th><th>Rejected</th><th>Reject %</th><th>SYN-only %</th></tr></thead><tbody>`;
   top.forEach(s=>{
     const rCls=s.rejectPct>70?'cr':s.rejectPct>30?'wa':'ok';
     html+=`<tr>
