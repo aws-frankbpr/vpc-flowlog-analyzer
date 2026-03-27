@@ -322,15 +322,27 @@ function topSourceIPs(recs){
   return html+'</tbody></table></div>';
 }
 
-// === TOP OUTBOUND DESTINATION IPs (exclude self-traffic only) ===
+// === TOP OUTBOUND DESTINATION IPs (exclude ENI's own IPs) ===
 function topDestIPs(recs){
-  // Collect IPs that belong to this ENI/instance (self IPs)
-  const selfIPs=new Set(allRecords.flatMap(r=>[r.srcaddr,r.dstaddr]).filter(ip=>isPrivate(ip)&&ip!=='0.0.0.0'));
+  // Detect IPs that belong to ENIs in this flow log:
+  // In egress flows, srcaddr is the ENI's IP. In ingress flows, dstaddr is the ENI's IP.
+  const eniIPs=new Set();
+  allRecords.forEach(r=>{
+    const dir=r['flow-direction'];
+    if(dir==='egress')eniIPs.add(r.srcaddr);
+    else if(dir==='ingress')eniIPs.add(r.dstaddr);
+  });
+  // Fallback if no flow-direction field: use private IPs seen in both src and dst
+  if(!eniIPs.size){
+    const srcs=new Set(allRecords.map(r=>r.srcaddr).filter(isPrivate));
+    const dsts=new Set(allRecords.map(r=>r.dstaddr).filter(isPrivate));
+    srcs.forEach(ip=>{if(dsts.has(ip))eniIPs.add(ip);});
+  }
   const map={};
   recs.forEach(r=>{
     const ip=r.dstaddr;
-    if(selfIPs.has(ip)&&selfIPs.has(r.srcaddr))return; // Skip self-to-self traffic
-    if(!map[ip])map[ip]={bytes:0,flows:0,accepted:0,rejected:0,ports:new Set(),isPrivate:isPrivate(ip)};
+    if(eniIPs.has(ip))return; // Skip traffic to own ENI IPs
+    if(!map[ip])map[ip]={bytes:0,flows:0,accepted:0,rejected:0,ports:new Set(),priv:isPrivate(ip)};
     const d=map[ip];
     d.flows++;d.bytes+=r._bytes;
     r.action==='ACCEPT'?d.accepted++:d.rejected++;
@@ -339,10 +351,10 @@ function topDestIPs(recs){
   const sorted=Object.entries(map).sort((a,b)=>b[1].bytes-a[1].bytes).slice(0,20);
   if(!sorted.length)return'';
   let html=`<h3>🎯 Top 20 Outbound Destination IPs — of ${Object.keys(map).length}</h3>
-  <p class="sub">Self-traffic excluded. Private IPs may indicate cross-subnet or cross-VPC communication.</p>
+  <p class="sub">Traffic to this ENI's own IPs excluded (${[...eniIPs].join(', ')}). Private IPs may indicate cross-subnet or cross-VPC communication.</p>
   <div class="tw"><table><thead><tr><th>Destination IP</th><th>Country</th><th>Org</th><th>Flows</th><th>Accepted</th><th>Rejected</th><th>Bytes</th><th>Unique Ports</th></tr></thead><tbody>`;
   sorted.forEach(([ip,d])=>{
-    html+=`<tr><td><b>${ip}</b> ${d.isPrivate?'<span class="t in">VPC</span>':''}</td><td>${ipGeoCell(ip)}</td><td>${ipOrgCell(ip)}</td>
+    html+=`<tr><td><b>${ip}</b> ${d.priv?'<span class="t in">VPC</span>':''}</td><td>${ipGeoCell(ip)}</td><td>${ipOrgCell(ip)}</td>
     <td>${d.flows.toLocaleString()}</td><td>${d.accepted.toLocaleString()}</td><td>${d.rejected.toLocaleString()}</td>
     <td>${formatBytes(d.bytes)}</td><td>${d.ports.size.toLocaleString()}</td></tr>`;
   });
