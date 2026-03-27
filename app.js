@@ -324,19 +324,26 @@ function topSourceIPs(recs){
 
 // === TOP OUTBOUND DESTINATION IPs (exclude ENI's own IPs) ===
 function topDestIPs(recs){
-  // Detect IPs that belong to ENIs in this flow log:
-  // In egress flows, srcaddr is the ENI's IP. In ingress flows, dstaddr is the ENI's IP.
+  // Detect IPs that belong to each ENI:
+  // egress: srcaddr is the ENI's IP. ingress: dstaddr is the ENI's IP.
   const eniIPs=new Set();
   allRecords.forEach(r=>{
+    const eni=r['interface-id'];
+    if(!eni||eni==='-')return;
     const dir=r['flow-direction'];
     if(dir==='egress')eniIPs.add(r.srcaddr);
     else if(dir==='ingress')eniIPs.add(r.dstaddr);
   });
-  // Fallback if no flow-direction field: use private IPs seen in both src and dst
+  // Fallback if no flow-direction: IPs that appear as BOTH src and dst on same ENI
   if(!eniIPs.size){
-    const srcs=new Set(allRecords.map(r=>r.srcaddr).filter(isPrivate));
-    const dsts=new Set(allRecords.map(r=>r.dstaddr).filter(isPrivate));
-    srcs.forEach(ip=>{if(dsts.has(ip))eniIPs.add(ip);});
+    const perEni={};
+    allRecords.forEach(r=>{
+      const eni=r['interface-id']||'?';
+      if(!perEni[eni])perEni[eni]={src:new Set(),dst:new Set()};
+      if(isPrivate(r.srcaddr))perEni[eni].src.add(r.srcaddr);
+      if(isPrivate(r.dstaddr))perEni[eni].dst.add(r.dstaddr);
+    });
+    Object.values(perEni).forEach(e=>e.src.forEach(ip=>{if(e.dst.has(ip))eniIPs.add(ip);}));
   }
   const map={};
   recs.forEach(r=>{
