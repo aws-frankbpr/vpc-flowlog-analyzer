@@ -413,36 +413,49 @@ function topSourceIPs(recs){
     if(HIGH_RISK_PORTS[r._dstport])d.hrPorts.add(r._dstport);
     if(r._tcpflags===2)d.synOnly++;
   });
-  const sorted=Object.entries(map).sort((a,b)=>b[1].flows-a[1].flows).slice(0,20);
-  if(!sorted.length)return'';
-  let html=`<h3>🎯 Top 20 Inbound Source IPs — of ${Object.keys(map).length} (<a href="https://docs.aws.amazon.com/config/latest/developerguide/restricted-common-ports.html">AWS Config Restricted Ports</a> flagged)</h3>
-  <p class="sub">${eniOwnIPs.size?'Excluded '+eniOwnIPs.size+' ENI own IPs ('+[...eniOwnIPs].join(', ')+') — internal VPC traffic.':''}</p>
-  <div class="tw"><table><thead><tr><th>Source IP</th><th>Country</th><th>Org</th><th>Restricted Ports Hit</th><th>SYN %</th><th>Verdict</th><th>Flows</th><th>Bytes</th></tr></thead><tbody>`;
-  sorted.forEach(([ip,d])=>{
-    const sp=d.flows?Math.round(d.synOnly/d.flows*100):0;
-    const rList=[...d.hrPorts].map(p=>`<a href="#" onclick="filterByPort(${p});return false" class="port-chip">${p}/${HIGH_RISK_PORTS[p]||''}</a>`).join(' ');
-    // Verdict: the one column that tells you what to do
-    let verdict;
-    if(d.hrPorts.size&&d.accepted>0&&d.rejected===0){
-      verdict=`<span class="t cr">⛔ ${d.accepted.toLocaleString()} allowed, none blocked</span>`;
-    }else if(d.hrPorts.size&&d.accepted>0){
-      verdict=`<span class="t cr">⚠️ ${d.accepted.toLocaleString()} allowed</span> / ${d.rejected.toLocaleString()} blocked`;
-    }else if(d.hrPorts.size&&d.accepted===0){
-      verdict=`<span class="t ok">✅ All ${d.rejected.toLocaleString()} blocked</span>`;
-    }else if(d.rejected>0&&d.accepted===0){
-      verdict=`<span class="t ok">✅ All ${d.rejected.toLocaleString()} blocked</span>`;
-    }else if(d.rejected===0){
-      verdict=`<span class="t in">✅ ${d.accepted.toLocaleString()} allowed</span>`;
-    }else{
-      verdict=`${d.accepted.toLocaleString()} allowed / ${d.rejected.toLocaleString()} blocked`;
-    }
-    html+=`<tr><td><b>${ip}</b></td><td>${ipGeoCell(ip)}</td><td>${ipOrgCell(ip)}</td>
-    <td>${d.hrPorts.size?rList:'—'}</td>
-    <td>${sp?`<span class="t ${sp>50?'cr':'wa'}">${sp}%</span>`:'—'}</td>
-    <td>${verdict}</td>
-    <td>${d.flows.toLocaleString()}</td><td>${formatBytes(d.bytes)}</td></tr>`;
-  });
-  return html+'</tbody></table></div>';
+  // Separate threats from noise
+  const allEntries=Object.entries(map);
+  const threats=allEntries.filter(([,d])=>d.hrPorts.size>0||d.rejected>0||d.synOnly>0).sort((a,b)=>b[1].flows-a[1].flows);
+  const normal=allEntries.filter(([,d])=>d.hrPorts.size===0&&d.rejected===0&&d.synOnly===0).sort((a,b)=>b[1].flows-a[1].flows);
+
+  let html='';
+  if(threats.length){
+    html+=`<h3>🎯 Inbound Threats — ${threats.length} IPs (<a href="https://docs.aws.amazon.com/config/latest/developerguide/restricted-common-ports.html">AWS Config Restricted Ports</a>)</h3>
+    <p class="sub">${eniOwnIPs.size?'ENI own IPs excluded ('+[...eniOwnIPs].join(', ')+'). ':''}IPs that hit restricted ports, were blocked, or performed SYN scans.</p>
+    <div class="tw"><table><thead><tr><th>Source IP</th><th>Country</th><th>Org</th><th>Restricted Ports Hit</th><th>SYN %</th><th>Verdict</th><th>Flows</th><th>Bytes</th></tr></thead><tbody>`;
+    threats.forEach(([ip,d])=>{
+      const sp=d.flows?Math.round(d.synOnly/d.flows*100):0;
+      const rList=[...d.hrPorts].map(p=>`<a href="#" onclick="filterByPort(${p});return false" class="port-chip">${p}/${HIGH_RISK_PORTS[p]||''}</a>`).join(' ');
+      let verdict;
+      if(d.hrPorts.size&&d.accepted>0&&d.rejected===0){
+        verdict=`<span class="t cr">⛔ ${d.accepted.toLocaleString()} allowed, none blocked</span>`;
+      }else if(d.hrPorts.size&&d.accepted>0){
+        verdict=`<span class="t cr">⚠️ ${d.accepted.toLocaleString()} allowed</span> / ${d.rejected.toLocaleString()} blocked`;
+      }else if(d.rejected>0&&d.accepted===0){
+        verdict=`<span class="t ok">✅ All ${d.rejected.toLocaleString()} blocked</span>`;
+      }else{
+        verdict=`${d.rejected.toLocaleString()} blocked / ${d.accepted.toLocaleString()} allowed`;
+      }
+      html+=`<tr><td><b>${ip}</b></td><td>${ipGeoCell(ip)}</td><td>${ipOrgCell(ip)}</td>
+      <td>${d.hrPorts.size?rList:'—'}</td>
+      <td>${sp?`<span class="t ${sp>50?'cr':'wa'}">${sp}%</span>`:'—'}</td>
+      <td>${verdict}</td>
+      <td>${d.flows.toLocaleString()}</td><td>${formatBytes(d.bytes)}</td></tr>`;
+    });
+    html+='</tbody></table></div>';
+  }
+  if(normal.length){
+    const shown=normal.slice(0,10);
+    html+=`<h3>ℹ️ Other Inbound Sources — ${normal.length} IPs, no threat signals</h3>
+    <p class="sub">Normal allowed traffic — no restricted ports, no blocks, no SYN scans.</p>
+    <div class="tw"><table><thead><tr><th>Source IP</th><th>Country</th><th>Org</th><th>Flows</th><th>Bytes</th></tr></thead><tbody>`;
+    shown.forEach(([ip,d])=>{
+      html+=`<tr><td>${ip}</td><td>${ipGeoCell(ip)}</td><td>${ipOrgCell(ip)}</td>
+      <td>${d.flows.toLocaleString()}</td><td>${formatBytes(d.bytes)}</td></tr>`;
+    });
+    html+='</tbody></table></div>';
+  }
+  return html;
 }
 
 // === TOP OUTBOUND DESTINATION IPs ===
