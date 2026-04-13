@@ -417,18 +417,29 @@ function topSourceIPs(recs){
   if(!sorted.length)return'';
   let html=`<h3>🎯 Top 20 Inbound Source IPs — of ${Object.keys(map).length} (<a href="https://docs.aws.amazon.com/config/latest/developerguide/restricted-common-ports.html">AWS Config Restricted Ports</a> flagged)</h3>
   <p class="sub">${eniOwnIPs.size?'Excluded '+eniOwnIPs.size+' ENI own IPs ('+[...eniOwnIPs].join(', ')+') — internal VPC traffic.':''}</p>
-  <div class="tw"><table><thead><tr><th>Source IP</th><th>Country</th><th>Org</th><th>Restricted Ports Hit</th><th>SYN %</th><th>Blocked</th><th>Allowed</th><th>Flows</th><th>Bytes</th></tr></thead><tbody>`;
+  <div class="tw"><table><thead><tr><th>Source IP</th><th>Country</th><th>Org</th><th>Restricted Ports Hit</th><th>SYN %</th><th>Verdict</th><th>Flows</th><th>Bytes</th></tr></thead><tbody>`;
   sorted.forEach(([ip,d])=>{
     const sp=d.flows?Math.round(d.synOnly/d.flows*100):0;
     const rList=[...d.hrPorts].map(p=>`<a href="#" onclick="filterByPort(${p});return false" class="port-chip">${p}/${HIGH_RISK_PORTS[p]||''}</a>`).join(' ');
-    const rjPct=d.flows?Math.round(d.rejected/d.flows*100):0;
-    const acPct=d.flows?Math.round(d.accepted/d.flows*100):0;
-    const allowedCls=d.hrPorts.size&&d.accepted>0?'cr':'ok';
+    // Verdict: the one column that tells you what to do
+    let verdict;
+    if(d.hrPorts.size&&d.accepted>0&&d.rejected===0){
+      verdict=`<span class="t cr">⛔ ${d.accepted.toLocaleString()} allowed, none blocked</span>`;
+    }else if(d.hrPorts.size&&d.accepted>0){
+      verdict=`<span class="t cr">⚠️ ${d.accepted.toLocaleString()} allowed</span> / ${d.rejected.toLocaleString()} blocked`;
+    }else if(d.hrPorts.size&&d.accepted===0){
+      verdict=`<span class="t ok">✅ All ${d.rejected.toLocaleString()} blocked</span>`;
+    }else if(d.rejected>0&&d.accepted===0){
+      verdict=`<span class="t ok">✅ All ${d.rejected.toLocaleString()} blocked</span>`;
+    }else if(d.rejected===0){
+      verdict=`<span class="t in">✅ ${d.accepted.toLocaleString()} allowed</span>`;
+    }else{
+      verdict=`${d.accepted.toLocaleString()} allowed / ${d.rejected.toLocaleString()} blocked`;
+    }
     html+=`<tr><td><b>${ip}</b></td><td>${ipGeoCell(ip)}</td><td>${ipOrgCell(ip)}</td>
     <td>${d.hrPorts.size?rList:'—'}</td>
     <td>${sp?`<span class="t ${sp>50?'cr':'wa'}">${sp}%</span>`:'—'}</td>
-    <td>${d.rejected?d.rejected.toLocaleString()+` <span class="t ${rjPct>70?'ok':rjPct>30?'wa':'cr'}">${rjPct}%</span>`:'<span class="t cr">None</span>'}</td>
-    <td>${d.accepted.toLocaleString()} <span class="t ${allowedCls}">${acPct}%</span></td>
+    <td>${verdict}</td>
     <td>${d.flows.toLocaleString()}</td><td>${formatBytes(d.bytes)}</td></tr>`;
   });
   return html+'</tbody></table></div>';
@@ -466,15 +477,21 @@ function topDestIPs(recs){
   });
   const sorted=Object.entries(map).sort((a,b)=>b[1].bytes-a[1].bytes).slice(0,20);
   if(!sorted.length)return'';
-  let html=`<h3>🎯 Top 20 Outbound Destination IPs — of ${Object.keys(map).length}</h3>
-  <p class="sub">Traffic to this ENI's own IPs excluded (${[...eniIPs].join(', ')}). Private IPs may indicate cross-subnet or cross-VPC communication.</p>
-  <div class="tw"><table><thead><tr><th>Destination IP</th><th>Country</th><th>Org</th><th>Rejected</th><th>Bytes</th><th>Flows</th><th>Accepted</th><th>Unique Ports</th></tr></thead><tbody>`;
+  let html=`<h3>🎯 Top 20 Outbound Destinations by Volume — of ${Object.keys(map).length}</h3>
+  <p class="sub">Sorted by bytes. ${eniIPs.size?'ENI own IPs excluded ('+[...eniIPs].join(', ')+').':''} Look for unexpected destinations or high data transfer.</p>
+  <div class="tw"><table><thead><tr><th>Destination IP</th><th>Country</th><th>Org</th><th>Bytes</th><th>Flows</th><th>Status</th></tr></thead><tbody>`;
   sorted.forEach(([ip,d])=>{
-    const rjPct=d.flows?Math.round(d.rejected/d.flows*100):0;
+    let status;
+    if(d.rejected>0&&d.accepted===0){
+      status=`<span class="t wa">All ${d.rejected.toLocaleString()} blocked</span>`;
+    }else if(d.rejected>0){
+      status=`<span class="t wa">${d.rejected.toLocaleString()} blocked</span> / ${d.accepted.toLocaleString()} sent`;
+    }else{
+      status=`<span class="t ok">${d.accepted.toLocaleString()} sent</span>`;
+    }
     html+=`<tr><td><b>${ip}</b> ${d.priv?'<span class="t in">VPC</span>':''}</td><td>${ipGeoCell(ip)}</td><td>${ipOrgCell(ip)}</td>
-    <td>${d.rejected.toLocaleString()} ${d.rejected?`<span class="t ${rjPct>70?'cr':rjPct>30?'wa':'ok'}">${rjPct}%</span>`:''}</td>
-    <td>${formatBytes(d.bytes)}</td><td>${d.flows.toLocaleString()}</td><td>${d.accepted.toLocaleString()}</td>
-    <td>${d.ports.size.toLocaleString()}</td></tr>`;
+    <td>${formatBytes(d.bytes)}</td><td>${d.flows.toLocaleString()}</td>
+    <td>${status}</td></tr>`;
   });
   return html+'</tbody></table></div>';
 }
@@ -495,11 +512,13 @@ function geoTable(recs,ipField){
   const top=sorted.slice(0,20);
   if(!top.length)return'';
   let html=`<h3>🌍 Geographic Distribution — Top 20 of ${sorted.length}</h3>
-  <div class="tw"><table><thead><tr><th>Country</th><th>Reject Rate</th><th>Rejected</th><th>Accepted</th><th>Unique IPs</th></tr></thead><tbody>`;
+  <div class="tw"><table><thead><tr><th>Country</th><th>Flows</th><th>Blocked</th><th>Allowed</th><th>Unique IPs</th></tr></thead><tbody>`;
   top.forEach(d=>{
-    const t=d.accept+d.reject;const rp=t?Math.round(d.reject/t*100):0;
-    const cls=rp>70?'cr':rp>30?'wa':'ok';
-    html+=`<tr><td>${flag(d.cc)} ${d.country}</td><td><span class="t ${cls}">${rp}%</span></td><td>${d.reject.toLocaleString()}</td><td>${d.accept.toLocaleString()}</td><td>${d.ips.size}</td></tr>`;
+    const t=d.accept+d.reject;
+    const blockedPct=t?Math.round(d.reject/t*100):0;
+    // Color: high blocked = green (SGs working), low blocked = red (traffic getting through)
+    const cls=blockedPct>70?'ok':blockedPct>30?'wa':'cr';
+    html+=`<tr><td>${flag(d.cc)} ${d.country}</td><td>${t.toLocaleString()}</td><td>${d.reject.toLocaleString()} <span class="t ${cls}">${blockedPct}%</span></td><td>${d.accept.toLocaleString()}</td><td>${d.ips.size}</td></tr>`;
   });
   return html+'</tbody></table></div>';
 }
@@ -511,10 +530,14 @@ function topPorts(recs,portField,title){
   const sorted=Object.entries(map).sort((a,b)=>(b[1].accept+b[1].reject)-(a[1].accept+a[1].reject));
   const top=sorted.slice(0,20);
   if(!top.length)return'';
-  let html=`<h3>🔌 ${title} — Top 20 of ${sorted.length}</h3><div class="tw"><table><thead><tr><th>Port</th><th>Service</th><th>Reject %</th><th>Total</th><th>Rejected</th><th>Accepted</th></tr></thead><tbody>`;
+  let html=`<h3>🔌 ${title} — Top 20 of ${sorted.length}</h3><div class="tw"><table><thead><tr><th>Port</th><th>Service</th><th>Flows</th><th>Blocked</th><th>Allowed</th></tr></thead><tbody>`;
   top.forEach(([port,d])=>{
-    const t=d.accept+d.reject;const rp=t?Math.round(d.reject/t*100):0;const cls=rp>70?'cr':rp>30?'wa':'ok';
-    html+=`<tr><td><a href="#" onclick="filterByPort(${port});return false" class="port-chip-table">${port}</a></td><td>${PORTS[port]||'—'}</td><td><span class="t ${cls}">${rp}%</span></td><td>${t.toLocaleString()}</td><td>${d.reject.toLocaleString()}</td><td>${d.accept.toLocaleString()}</td></tr>`;
+    const t=d.accept+d.reject;
+    const blockedPct=t?Math.round(d.reject/t*100):0;
+    const isRestricted=!!HIGH_RISK_PORTS[port];
+    // Restricted port with allowed traffic = concern
+    const allowedCls=isRestricted&&d.accept>0?'cr':d.accept>0?'in':'ok';
+    html+=`<tr><td><a href="#" onclick="filterByPort(${port});return false" class="port-chip-table">${port}</a></td><td>${PORTS[port]||'—'} ${isRestricted?'<span class="t cr" style="font-size:.65em">restricted</span>':''}</td><td>${t.toLocaleString()}</td><td>${d.reject?d.reject.toLocaleString():'—'}</td><td>${d.accept?`<span class="t ${allowedCls}">${d.accept.toLocaleString()}</span>`:'—'}</td></tr>`;
   });
   return html+'</tbody></table></div>';
 }
@@ -524,10 +547,10 @@ function protocolBreakdown(recs){
   const map={};
   recs.forEach(r=>{const p=r._protocol;if(!map[p])map[p]={accept:0,reject:0,bytes:0};r.action==='ACCEPT'?map[p].accept++:map[p].reject++;map[p].bytes+=r._bytes;});
   const sorted=Object.entries(map).sort((a,b)=>(b[1].accept+b[1].reject)-(a[1].accept+a[1].reject));
-  let html=`<h2>📡 Protocol Distribution</h2><div class="tw"><table><thead><tr><th>Protocol</th><th>Accepted</th><th>Rejected</th><th>Reject %</th><th>Bytes</th></tr></thead><tbody>`;
+  let html=`<h2>📡 Protocol Distribution</h2><div class="tw"><table><thead><tr><th>Protocol</th><th>Flows</th><th>Blocked</th><th>Allowed</th><th>Bytes</th></tr></thead><tbody>`;
   sorted.forEach(([proto,d])=>{
-    const t=d.accept+d.reject;const rp=t?Math.round(d.reject/t*100):0;const cls=rp>70?'cr':rp>30?'wa':'ok';
-    html+=`<tr><td><b>${PROTOS[proto]||'Proto '+proto}</b></td><td>${d.accept.toLocaleString()}</td><td>${d.reject.toLocaleString()}</td><td><span class="t ${cls}">${rp}%</span></td><td>${formatBytes(d.bytes)}</td></tr>`;
+    const t=d.accept+d.reject;
+    html+=`<tr><td><b>${PROTOS[proto]||'Proto '+proto}</b></td><td>${t.toLocaleString()}</td><td>${d.reject?d.reject.toLocaleString():'—'}</td><td>${d.accept.toLocaleString()}</td><td>${formatBytes(d.bytes)}</td></tr>`;
   });
   return html+'</tbody></table></div>';
 }
