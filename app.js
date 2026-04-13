@@ -5,7 +5,7 @@ const V2_FIELDS=['version','account-id','interface-id','srcaddr','dstaddr','srcp
 const RFC1918=[{s:0x0A000000,m:0xFF000000},{s:0xAC100000,m:0xFFF00000},{s:0xC0A80000,m:0xFFFF0000}];
 const HIGH_RISK_PORTS={20:'FTP-Data',21:'FTP',22:'SSH',23:'Telnet',135:'RPC',137:'NetBIOS',445:'SMB',1433:'MSSQL',3306:'MySQL',3389:'RDP',4333:'Reserved',5432:'PostgreSQL',5900:'VNC',6379:'Redis',27017:'MongoDB'};
 
-let allRecords=[], geoCache={}, currentFilter={action:'all',protocol:'all',search:'',eni:'all'};
+let allRecords=[], geoCache={}, currentFilter={action:'all',protocol:'all',search:'',eni:'all',port:''};
 
 // === THEME ===
 function toggleTheme(){
@@ -207,6 +207,7 @@ function applyFilters(){
     if(currentFilter.protocol!=='all'&&r._protocol!==parseInt(currentFilter.protocol))return false;
     if(currentFilter.eni!=='all'&&r['interface-id']!==currentFilter.eni)return false;
     if(currentFilter.search&&!r.srcaddr.includes(currentFilter.search)&&!r.dstaddr.includes(currentFilter.search))return false;
+    if(currentFilter.port&&r._srcport!==parseInt(currentFilter.port)&&r._dstport!==parseInt(currentFilter.port))return false;
     return true;
   });
 }
@@ -215,9 +216,10 @@ function applyAndRender(){
   currentFilter.protocol=document.getElementById('fProto').value;
   currentFilter.eni=document.getElementById('fEni').value;
   currentFilter.search=document.getElementById('fSearch').value;
+  currentFilter.port=document.getElementById('fPort').value.trim();
   render();
 }
-function resetFilters(){currentFilter={action:'all',protocol:'all',search:'',eni:'all'};render();}
+function resetFilters(){currentFilter={action:'all',protocol:'all',search:'',eni:'all',port:''};render();}
 
 // === EXPORT ===
 function exportCSV(){
@@ -277,6 +279,7 @@ function render(){
     <label>Protocol:</label><select id="fProto"><option value="all">All</option><option value="6">TCP</option><option value="17">UDP</option><option value="1">ICMP</option></select>
     <label>ENI:</label><select id="fEni"><option value="all">All ENIs</option>${eniOpts}</select>
     <label>Search IP:</label><input id="fSearch" placeholder="e.g. 10.0.1.">
+    <label>Port:</label><input id="fPort" placeholder="e.g. 3306" style="width:80px">
     <button onclick="applyAndRender()">Apply</button>
     <button onclick="resetFilters()" style="background:var(--muted)">Reset</button>
     <button id="resolveAllBtn" onclick="resolveAllGeo()" style="background:var(--warn)" title="Resolve country and org for top IPs using free GeoIP APIs">🌍 Resolve GeoIP</button>
@@ -316,6 +319,7 @@ function render(){
   document.getElementById('fProto').value=currentFilter.protocol;
   document.getElementById('fEni').value=currentFilter.eni;
   document.getElementById('fSearch').value=currentFilter.search;
+  document.getElementById('fPort').value=currentFilter.port;
   makeSortable();
 }
 
