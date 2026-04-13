@@ -366,22 +366,31 @@ function topSourceIPs(recs){
   if(threats.length){
     html+=`<h3>🎯 Inbound Threats — ${threats.length} IPs (<a href="https://docs.aws.amazon.com/config/latest/developerguide/restricted-common-ports.html">AWS Config Restricted Ports</a>)</h3>
     <p class="sub">${eniOwnIPs.size?'ENI own IPs excluded ('+[...eniOwnIPs].join(', ')+'). ':''}IPs that hit restricted ports, were blocked, or performed SYN scans.</p>
-    <div class="tw"><table><thead><tr><th>Source IP</th><th>Country</th><th>Org</th><th>Restricted Ports Hit</th><th>SYN %</th><th>Verdict</th><th>Flows</th><th>Bytes</th></tr></thead><tbody>`;
+    <div class="tw"><table><thead><tr><th>Source IP</th><th>Country</th><th>Org</th><th>Ports Targeted</th><th>SYN %</th><th>Verdict</th><th>Flows</th><th>Bytes</th></tr></thead><tbody>`;
     threats.forEach(([ip,d])=>{
       const sp=d.flows?Math.round(d.synOnly/d.flows*100):0;
       const rList=[...d.hrPorts].map(p=>`<a href="#" onclick="filterByPort(${p});return false" class="port-chip">${p}/${HIGH_RISK_PORTS[p]||''}</a>`).join(' ');
+      // Port scan detection: many unique ports + SYN = scanning
+      let portsCell;
+      if(d.hrPorts.size) portsCell=rList;
+      else if(d.ports.size>10) portsCell=`<span class="t wa">Scanning ${d.ports.size} ports</span>`;
+      else portsCell='—';
       let verdict;
       if(d.hrPorts.size&&d.accepted>0&&d.rejected===0){
         verdict=`<span class="t cr">⛔ ${d.accepted.toLocaleString()} allowed, none blocked</span>`;
       }else if(d.hrPorts.size&&d.accepted>0){
         verdict=`<span class="t cr">⚠️ ${d.accepted.toLocaleString()} allowed</span> / ${d.rejected.toLocaleString()} blocked`;
+      }else if(d.accepted>0&&d.rejected===0&&(d.synOnly>0||d.ports.size>10)){
+        verdict=`<span class="t cr">⛔ ${d.accepted.toLocaleString()} allowed, none blocked</span>`;
       }else if(d.rejected>0&&d.accepted===0){
         verdict=`<span class="t ok">✅ All ${d.rejected.toLocaleString()} blocked</span>`;
+      }else if(d.rejected>0&&d.accepted>0){
+        verdict=`<span class="t wa">⚠️ ${d.accepted.toLocaleString()} allowed</span> / ${d.rejected.toLocaleString()} blocked`;
       }else{
-        verdict=`${d.rejected.toLocaleString()} blocked / ${d.accepted.toLocaleString()} allowed`;
+        verdict=`${d.accepted.toLocaleString()} allowed`;
       }
       html+=`<tr><td><b>${ip}</b></td><td>${ipGeoCell(ip)}</td><td>${ipOrgCell(ip)}</td>
-      <td>${d.hrPorts.size?rList:'—'}</td>
+      <td>${portsCell}</td>
       <td>${sp?`<span class="t ${sp>50?'cr':'wa'}">${sp}%</span>`:'—'}</td>
       <td>${verdict}</td>
       <td>${d.flows.toLocaleString()}</td><td>${formatBytes(d.bytes)}</td></tr>`;
