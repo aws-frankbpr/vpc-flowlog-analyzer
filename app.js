@@ -255,6 +255,8 @@ function render(){
   const inbound=recs.filter(r=>isInbound(r));
   const outbound=recs.filter(r=>!isInbound(r));
   const total=recs.length;
+  const accepted=recs.filter(r=>r.action==='ACCEPT').length;
+  const rejected=recs.filter(r=>r.action==='REJECT').length;
   const starts=recs.map(r=>r._start).filter(t=>t>0);
   const ends=recs.map(r=>r._end).filter(t=>t>0);
   const minT=Math.min(...starts),maxT=Math.max(...ends);
@@ -262,36 +264,38 @@ function render(){
 
   const enis=[...new Set(recs.map(r=>r['interface-id']).filter(Boolean).filter(v=>v!=='-'))];
   const vpcs=[...new Set(recs.map(r=>r['vpc-id']).filter(Boolean).filter(v=>v!=='-'))];
-  const subnets=[...new Set(recs.map(r=>r['subnet-id']).filter(Boolean).filter(v=>v!=='-'))];
   const accounts=[...new Set(recs.map(r=>r['account-id']).filter(Boolean).filter(v=>v!=='-'))];
-  const privateIPs=[...new Set(recs.flatMap(r=>[r.srcaddr,r.dstaddr]).filter(ip=>isPrivate(ip)&&ip!=='0.0.0.0'))];
   const eniList=[...new Set(recs.map(r=>r['interface-id']).filter(v=>v&&v!=='-'))];
   const eniOpts=eniList.map(e=>`<option value="${e}">${e}</option>`).join('');
 
   let html=`
   <nav class="section-nav" aria-label="Dashboard sections">
-    <a href="#sec-eni">🔌 ENIs</a>
-    <a href="#sec-inbound">⬇ Inbound</a>
+    <a href="#sec-security">🛡️ Security</a>
     <a href="#sec-outbound">⬆ Outbound</a>
-    <a href="#sec-timeline">📊 Timeline</a>
+    <a href="#sec-activity">📊 Activity</a>
   </nav>
+  <div class="grid">
+    <div class="s in"><div class="n">${total.toLocaleString()}</div><div class="l">Total Flows</div></div>
+    <div class="s in"><div class="n">⬇ ${inbound.length.toLocaleString()}</div><div class="l">Inbound</div></div>
+    <div class="s in"><div class="n">⬆ ${outbound.length.toLocaleString()}</div><div class="l">Outbound</div></div>
+    <div class="s ok"><div class="n">${accepted.toLocaleString()}</div><div class="l">Allowed</div></div>
+    <div class="s cr"><div class="n">${rejected.toLocaleString()}</div><div class="l">Blocked</div></div>
+    <div class="s in"><div class="n">${formatBytes(recs.reduce((s,r)=>s+r._bytes,0))}</div><div class="l">Traffic</div></div>
+  </div>
   <div class="card" style="border-left-color:var(--accent)">
-    <b>${allRecords.length.toLocaleString()}</b> records parsed | Showing: <b>${total.toLocaleString()}</b> (⬇ ${inbound.length.toLocaleString()} inbound, ⬆ ${outbound.length.toLocaleString()} outbound) | Period: ${timeRange}<br>
-    ${accounts.length?'<b>Account:</b> '+accounts.join(', ')+' | ':''}${vpcs.length?'<b>VPC:</b> '+vpcs.join(', ')+' | ':''}${subnets.length?'<b>Subnets:</b> '+subnets.join(', ')+' | ':''}${enis.length?'<b>ENIs:</b> '+enis.join(', '):''}
-    ${privateIPs.length?'<br><b>Internal IPs:</b> '+privateIPs.slice(0,5).join(', ')+(privateIPs.length>5?' (+'+(privateIPs.length-5)+' more)':''):''}
+    ${accounts.length?'<b>Account:</b> '+accounts.join(', ')+' | ':''}${vpcs.length?'<b>VPC:</b> '+vpcs.join(', ')+' | ':''}${enis.length?'<b>ENIs:</b> '+enis.join(', ')+' | ':''}Period: ${timeRange}
   </div>
   <div class="filters" id="filterBar">
     <label>Action:</label><select id="fAction"><option value="all">All</option><option value="ACCEPT">Accept</option><option value="REJECT">Reject</option></select>
     <label>Protocol:</label><select id="fProto"><option value="all">All</option><option value="6">TCP</option><option value="17">UDP</option><option value="1">ICMP</option></select>
     <label>ENI:</label><select id="fEni"><option value="all">All ENIs</option>${eniOpts}</select>
-    <label>Search IP:</label><input id="fSearch" placeholder="e.g. 10.0.1.">
+    <label>IP:</label><input id="fSearch" placeholder="e.g. 10.0.1.">
     <label>Port:</label><input id="fPort" placeholder="e.g. 3306" style="width:80px">
     <button onclick="applyAndRender()">Apply</button>
     <button onclick="resetFilters()" style="background:var(--muted)">Reset</button>
     <button id="resolveAllBtn" onclick="resolveAllGeo()" style="background:var(--warn)" title="Resolve country and org for top IPs using free GeoIP APIs">🌍 Resolve GeoIP</button>
   </div>`;
 
-  // Active filter banner
   const activeFilters=[];
   if(currentFilter.action!=='all')activeFilters.push('Action: '+currentFilter.action);
   if(currentFilter.protocol!=='all')activeFilters.push('Protocol: '+(PROTOS[currentFilter.protocol]||currentFilter.protocol));
@@ -302,30 +306,22 @@ function render(){
     html+=`<div class="active-filter-banner">🔍 Filtered by: ${activeFilters.map(f=>`<span class="filter-tag">${f}</span>`).join(' ')} <a href="#" onclick="resetFilters();return false" class="clear-filters">✕ Clear all</a></div>`;
   }
 
-  html+=`<div id="sec-eni">`;
-  html+=eniTable(recs);
-  html+=`</div>`;
-
-  html+=`<div id="sec-inbound">`;
-  html+=`<h2 style="color:var(--accent);font-size:1.3em;border-bottom:3px solid var(--accent)">⬇ Inbound Traffic (${inbound.length.toLocaleString()} flows, ${formatBytes(inbound.reduce((s,r)=>s+r._bytes,0))})</h2>`;
-  html+=summaryGrid(inbound);
+  // === SECTION 1: SECURITY POSTURE ===
+  html+=`<div id="sec-security">`;
+  html+=`<h2 style="color:var(--danger);font-size:1.3em;border-bottom:3px solid var(--danger)">🛡️ Security Posture</h2>`;
   html+=topSourceIPs(inbound);
-  html+=topPorts(inbound,'dstport','Top Inbound Destination Ports');
-  html+=geoTable(inbound,'srcaddr');
-  html+=protocolBreakdown(inbound);
+  html+=topPorts(inbound,'dstport','Targeted Ports');
   html+=`</div>`;
 
+  // === SECTION 2: OUTBOUND ===
   html+=`<div id="sec-outbound">`;
-  html+=`<h2 style="color:var(--warn);font-size:1.3em;border-bottom:3px solid var(--warn)">⬆ Outbound Traffic (${outbound.length.toLocaleString()} flows, ${formatBytes(outbound.reduce((s,r)=>s+r._bytes,0))})</h2>`;
-  html+=summaryGrid(outbound);
+  html+=`<h2 style="color:var(--warn);font-size:1.3em;border-bottom:3px solid var(--warn)">⬆ Outbound Traffic</h2>`;
   html+=topDestIPs(outbound);
-  html+=topPorts(outbound,'dstport','Top Outbound Destination Ports');
-  html+=geoTable(outbound,'dstaddr');
-  html+=protocolBreakdown(outbound);
   html+=`</div>`;
 
-  html+=`<div id="sec-timeline">`;
-  html+=`<h2 style="font-size:1.3em;border-bottom:3px solid var(--muted)">📊 Combined Timeline</h2>`;
+  // === SECTION 3: ACTIVITY ===
+  html+=`<div id="sec-activity">`;
+  html+=`<h2 style="font-size:1.3em;border-bottom:3px solid var(--muted)">📊 Activity</h2>`;
   html+=timeline(recs);
   html+=`</div>`;
 
@@ -340,59 +336,7 @@ function render(){
   makeSortable();
 }
 
-// === SUMMARY GRID ===
-function summaryGrid(recs){
-  const accepted=recs.filter(r=>r.action==='ACCEPT').length;
-  const rejected=recs.filter(r=>r.action==='REJECT').length;
-  const rejectPct=recs.length?Math.round(rejected/recs.length*100):0;
-  const bytes=recs.reduce((s,r)=>s+r._bytes,0);
-  const uniqueIPs=new Set(recs.map(r=>r.srcaddr)).size;
-  return`<div class="grid">
-    <div class="s in"><div class="n">${recs.length.toLocaleString()}</div><div class="l">Flows</div></div>
-    <div class="s ok"><div class="n">${accepted.toLocaleString()}</div><div class="l">✅ Accepted</div></div>
-    <div class="s cr"><div class="n">${rejected.toLocaleString()}</div><div class="l">❌ Rejected</div></div>
-    <div class="s wa"><div class="n">${rejectPct}%</div><div class="l">Reject Rate</div></div>
-    <div class="s in"><div class="n">${uniqueIPs.toLocaleString()}</div><div class="l">Unique IPs</div></div>
-    <div class="s in"><div class="n">${formatBytes(bytes)}</div><div class="l">Traffic</div></div>
-  </div>`;
-}
-
 // === ENI BREAKDOWN ===
-function eniTable(recs){
-  const map={};
-  recs.forEach(r=>{
-    const eni=r['interface-id']||'unknown';
-    if(eni==='-')return;
-    if(!map[eni])map[eni]={inAccept:0,inReject:0,outAccept:0,outReject:0,bytesIn:0,bytesOut:0,srcIPs:new Set(),dstIPs:new Set(),privateIPs:new Set(),subnet:r['subnet-id']||'-'};
-    const dir=r['flow-direction'];
-    const isIngress=dir==='ingress'||(!dir&&!isPrivate(r.srcaddr));
-    if(isIngress){
-      r.action==='ACCEPT'?map[eni].inAccept++:map[eni].inReject++;
-      map[eni].bytesIn+=r._bytes;
-      map[eni].srcIPs.add(r.srcaddr);
-    }else{
-      r.action==='ACCEPT'?map[eni].outAccept++:map[eni].outReject++;
-      map[eni].bytesOut+=r._bytes;
-      map[eni].dstIPs.add(r.dstaddr);
-    }
-    [r.srcaddr,r.dstaddr].forEach(ip=>{if(isPrivate(ip)&&ip!=='0.0.0.0')map[eni].privateIPs.add(ip);});
-  });
-  const sorted=Object.entries(map).sort((a,b)=>(b[1].inAccept+b[1].inReject+b[1].outAccept+b[1].outReject)-(a[1].inAccept+a[1].inReject+a[1].outAccept+a[1].outReject));
-  if(!sorted.length)return'';
-  let html=`<h2>🔌 Network Interface (ENI) Breakdown</h2>
-  <p class="sub">Traffic per ENI — shows which interface is the primary attack surface vs internal communication.</p>
-  <div class="tw"><table><thead><tr><th>ENI</th><th>Private IP</th><th>Subnet</th><th>⬇ In Accept</th><th>⬇ In Reject</th><th>⬆ Out Accept</th><th>Bytes In</th><th>Bytes Out</th><th>Unique Sources</th></tr></thead><tbody>`;
-  sorted.forEach(([eni,d])=>{
-    const rejectPct=(d.inAccept+d.inReject)?Math.round(d.inReject/(d.inAccept+d.inReject)*100):0;
-    html+=`<tr><td><b>${eni}</b></td><td>${[...d.privateIPs].join(', ')}</td><td>${d.subnet}</td>
-    <td>${d.inAccept.toLocaleString()}</td><td>${d.inReject.toLocaleString()} <span class="t ${rejectPct>50?'cr':'ok'}">${rejectPct}%</span></td>
-    <td>${d.outAccept.toLocaleString()}</td>
-    <td>${formatBytes(d.bytesIn)}</td><td>${formatBytes(d.bytesOut)}</td>
-    <td>${d.srcIPs.size.toLocaleString()}</td></tr>`;
-  });
-  return html+'</tbody></table></div>';
-}
-
 // === TOP INBOUND SOURCE IPs ===
 function topSourceIPs(recs){
   // Detect ENI own IPs: on egress, srcaddr is the ENI's IP
@@ -510,32 +454,6 @@ function topDestIPs(recs){
 }
 
 // === GEO TABLE ===
-function geoTable(recs,ipField){
-  const map={};
-  recs.forEach(r=>{
-    const ip=r[ipField];
-    if(isPrivate(ip))return;
-    const g=geoFor(ip);
-    const k=g?g.cc+'|'+g.country:'??|Not resolved';
-    if(!map[k])map[k]={country:g?g.country:'Not resolved',cc:g?g.cc:'??',accept:0,reject:0,ips:new Set()};
-    r.action==='ACCEPT'?map[k].accept++:map[k].reject++;
-    map[k].ips.add(ip);
-  });
-  const sorted=Object.values(map).sort((a,b)=>(b.accept+b.reject)-(a.accept+a.reject));
-  const top=sorted.slice(0,20);
-  if(!top.length)return'';
-  let html=`<h3>🌍 Geographic Distribution — Top 20 of ${sorted.length}</h3>
-  <div class="tw"><table><thead><tr><th>Country</th><th>Flows</th><th>Blocked</th><th>Allowed</th><th>Unique IPs</th></tr></thead><tbody>`;
-  top.forEach(d=>{
-    const t=d.accept+d.reject;
-    const blockedPct=t?Math.round(d.reject/t*100):0;
-    // Color: high blocked = green (SGs working), low blocked = red (traffic getting through)
-    const cls=blockedPct>70?'ok':blockedPct>30?'wa':'cr';
-    html+=`<tr><td>${flag(d.cc)} ${d.country}</td><td>${t.toLocaleString()}</td><td>${d.reject.toLocaleString()} <span class="t ${cls}">${blockedPct}%</span></td><td>${d.accept.toLocaleString()}</td><td>${d.ips.size}</td></tr>`;
-  });
-  return html+'</tbody></table></div>';
-}
-
 // === TOP PORTS ===
 function topPorts(recs,portField,title){
   const map={};
@@ -546,24 +464,9 @@ function topPorts(recs,portField,title){
   let html=`<h3>🔌 ${title} — Top 20 of ${sorted.length}</h3><div class="tw"><table><thead><tr><th>Port</th><th>Service</th><th>Flows</th><th>Blocked</th><th>Allowed</th></tr></thead><tbody>`;
   top.forEach(([port,d])=>{
     const t=d.accept+d.reject;
-    const blockedPct=t?Math.round(d.reject/t*100):0;
     const isRestricted=!!HIGH_RISK_PORTS[port];
-    // Restricted port with allowed traffic = concern
     const allowedCls=isRestricted&&d.accept>0?'cr':d.accept>0?'in':'ok';
     html+=`<tr><td><a href="#" onclick="filterByPort(${port});return false" class="port-chip-table">${port}</a></td><td>${PORTS[port]||'—'} ${isRestricted?'<span class="t cr" style="font-size:.65em">restricted</span>':''}</td><td>${t.toLocaleString()}</td><td>${d.reject?d.reject.toLocaleString():'—'}</td><td>${d.accept?`<span class="t ${allowedCls}">${d.accept.toLocaleString()}</span>`:'—'}</td></tr>`;
-  });
-  return html+'</tbody></table></div>';
-}
-
-// === PROTOCOL BREAKDOWN ===
-function protocolBreakdown(recs){
-  const map={};
-  recs.forEach(r=>{const p=r._protocol;if(!map[p])map[p]={accept:0,reject:0,bytes:0};r.action==='ACCEPT'?map[p].accept++:map[p].reject++;map[p].bytes+=r._bytes;});
-  const sorted=Object.entries(map).sort((a,b)=>(b[1].accept+b[1].reject)-(a[1].accept+a[1].reject));
-  let html=`<h2>📡 Protocol Distribution</h2><div class="tw"><table><thead><tr><th>Protocol</th><th>Flows</th><th>Blocked</th><th>Allowed</th><th>Bytes</th></tr></thead><tbody>`;
-  sorted.forEach(([proto,d])=>{
-    const t=d.accept+d.reject;
-    html+=`<tr><td><b>${PROTOS[proto]||'Proto '+proto}</b></td><td>${t.toLocaleString()}</td><td>${d.reject?d.reject.toLocaleString():'—'}</td><td>${d.accept.toLocaleString()}</td><td>${formatBytes(d.bytes)}</td></tr>`;
   });
   return html+'</tbody></table></div>';
 }
