@@ -409,15 +409,18 @@ function topSourceIPs(recs){
   const sorted=Object.entries(map).sort((a,b)=>b[1].flows-a[1].flows).slice(0,20);
   if(!sorted.length)return'';
   let html=`<h3>🎯 Top 20 Inbound Source IPs — of ${Object.keys(map).length} (<a href="https://docs.aws.amazon.com/config/latest/developerguide/restricted-common-ports.html">AWS Config Restricted Ports</a> flagged)</h3>
-  <div class="tw"><table><thead><tr><th>Source IP</th><th>Country</th><th>Org</th><th>Flows</th><th>Accepted</th><th>Rejected</th><th>Bytes</th><th>Unique Ports</th><th>Restricted Ports Hit</th><th>SYN-only %</th></tr></thead><tbody>`;
+  <div class="tw"><table><thead><tr><th>Source IP</th><th>Country</th><th>Org</th><th>Restricted Ports Hit</th><th>SYN-only %</th><th>Rejected</th><th>Accepted</th><th>Flows</th><th>Bytes</th><th>Unique Ports</th></tr></thead><tbody>`;
   sorted.forEach(([ip,d])=>{
     const sp=d.flows?Math.round(d.synOnly/d.flows*100):0;
     const rList=[...d.hrPorts].map(p=>`<a href="#" onclick="filterByPort(${p});return false" class="port-chip">${p}/${HIGH_RISK_PORTS[p]||''}</a>`).join(' ');
+    const rjPct=d.flows?Math.round(d.rejected/d.flows*100):0;
     html+=`<tr><td><b>${ip}</b></td><td>${ipGeoCell(ip)}</td><td>${ipOrgCell(ip)}</td>
-    <td>${d.flows.toLocaleString()}</td><td>${d.accepted.toLocaleString()}</td><td>${d.rejected.toLocaleString()}</td>
-    <td>${formatBytes(d.bytes)}</td><td>${d.ports.size.toLocaleString()}</td>
     <td>${d.hrPorts.size?rList:'—'}</td>
-    <td>${sp?sp+'%':'—'}</td></tr>`;
+    <td>${sp?`<span class="t ${sp>50?'cr':'wa'}">${sp}%</span>`:'—'}</td>
+    <td>${d.rejected.toLocaleString()} <span class="t ${rjPct>70?'cr':rjPct>30?'wa':'ok'}">${rjPct}%</span></td>
+    <td>${d.accepted.toLocaleString()}</td>
+    <td>${d.flows.toLocaleString()}</td><td>${formatBytes(d.bytes)}</td>
+    <td>${d.ports.size.toLocaleString()}</td></tr>`;
   });
   return html+'</tbody></table></div>';
 }
@@ -456,11 +459,13 @@ function topDestIPs(recs){
   if(!sorted.length)return'';
   let html=`<h3>🎯 Top 20 Outbound Destination IPs — of ${Object.keys(map).length}</h3>
   <p class="sub">Traffic to this ENI's own IPs excluded (${[...eniIPs].join(', ')}). Private IPs may indicate cross-subnet or cross-VPC communication.</p>
-  <div class="tw"><table><thead><tr><th>Destination IP</th><th>Country</th><th>Org</th><th>Flows</th><th>Accepted</th><th>Rejected</th><th>Bytes</th><th>Unique Ports</th></tr></thead><tbody>`;
+  <div class="tw"><table><thead><tr><th>Destination IP</th><th>Country</th><th>Org</th><th>Rejected</th><th>Bytes</th><th>Flows</th><th>Accepted</th><th>Unique Ports</th></tr></thead><tbody>`;
   sorted.forEach(([ip,d])=>{
+    const rjPct=d.flows?Math.round(d.rejected/d.flows*100):0;
     html+=`<tr><td><b>${ip}</b> ${d.priv?'<span class="t in">VPC</span>':''}</td><td>${ipGeoCell(ip)}</td><td>${ipOrgCell(ip)}</td>
-    <td>${d.flows.toLocaleString()}</td><td>${d.accepted.toLocaleString()}</td><td>${d.rejected.toLocaleString()}</td>
-    <td>${formatBytes(d.bytes)}</td><td>${d.ports.size.toLocaleString()}</td></tr>`;
+    <td>${d.rejected.toLocaleString()} ${d.rejected?`<span class="t ${rjPct>70?'cr':rjPct>30?'wa':'ok'}">${rjPct}%</span>`:''}</td>
+    <td>${formatBytes(d.bytes)}</td><td>${d.flows.toLocaleString()}</td><td>${d.accepted.toLocaleString()}</td>
+    <td>${d.ports.size.toLocaleString()}</td></tr>`;
   });
   return html+'</tbody></table></div>';
 }
@@ -481,11 +486,11 @@ function geoTable(recs,ipField){
   const top=sorted.slice(0,20);
   if(!top.length)return'';
   let html=`<h3>🌍 Geographic Distribution — Top 20 of ${sorted.length}</h3>
-  <div class="tw"><table><thead><tr><th>Country</th><th>Accepted</th><th>Unique IPs</th><th>Rejected</th><th>Reject Rate</th></tr></thead><tbody>`;
+  <div class="tw"><table><thead><tr><th>Country</th><th>Reject Rate</th><th>Rejected</th><th>Accepted</th><th>Unique IPs</th></tr></thead><tbody>`;
   top.forEach(d=>{
     const t=d.accept+d.reject;const rp=t?Math.round(d.reject/t*100):0;
     const cls=rp>70?'cr':rp>30?'wa':'ok';
-    html+=`<tr><td>${flag(d.cc)} ${d.country}</td><td>${d.accept.toLocaleString()}</td><td>${d.ips.size}</td><td>${d.reject.toLocaleString()}</td><td><span class="t ${cls}">${rp}%</span></td></tr>`;
+    html+=`<tr><td>${flag(d.cc)} ${d.country}</td><td><span class="t ${cls}">${rp}%</span></td><td>${d.reject.toLocaleString()}</td><td>${d.accept.toLocaleString()}</td><td>${d.ips.size}</td></tr>`;
   });
   return html+'</tbody></table></div>';
 }
@@ -497,10 +502,10 @@ function topPorts(recs,portField,title){
   const sorted=Object.entries(map).sort((a,b)=>(b[1].accept+b[1].reject)-(a[1].accept+a[1].reject));
   const top=sorted.slice(0,20);
   if(!top.length)return'';
-  let html=`<h3>🔌 ${title} — Top 20 of ${sorted.length}</h3><div class="tw"><table><thead><tr><th>Port</th><th>Service</th><th>Accepted</th><th>Rejected</th><th>Total</th><th>Reject %</th></tr></thead><tbody>`;
+  let html=`<h3>🔌 ${title} — Top 20 of ${sorted.length}</h3><div class="tw"><table><thead><tr><th>Port</th><th>Service</th><th>Reject %</th><th>Total</th><th>Rejected</th><th>Accepted</th></tr></thead><tbody>`;
   top.forEach(([port,d])=>{
     const t=d.accept+d.reject;const rp=t?Math.round(d.reject/t*100):0;const cls=rp>70?'cr':rp>30?'wa':'ok';
-    html+=`<tr><td><a href="#" onclick="filterByPort(${port});return false" class="port-chip-table">${port}</a></td><td>${PORTS[port]||'—'}</td><td>${d.accept.toLocaleString()}</td><td>${d.reject.toLocaleString()}</td><td>${t.toLocaleString()}</td><td><span class="t ${cls}">${rp}%</span></td></tr>`;
+    html+=`<tr><td><a href="#" onclick="filterByPort(${port});return false" class="port-chip-table">${port}</a></td><td>${PORTS[port]||'—'}</td><td><span class="t ${cls}">${rp}%</span></td><td>${t.toLocaleString()}</td><td>${d.reject.toLocaleString()}</td><td>${d.accept.toLocaleString()}</td></tr>`;
   });
   return html+'</tbody></table></div>';
 }
