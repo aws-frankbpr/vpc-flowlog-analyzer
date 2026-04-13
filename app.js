@@ -1,11 +1,30 @@
 // === CONSTANTS ===
 const PORTS={21:'FTP',22:'SSH',23:'Telnet',25:'SMTP',53:'DNS',80:'HTTP',110:'POP3',135:'RPC',137:'NetBIOS',143:'IMAP',443:'HTTPS',445:'SMB',993:'IMAPS',1433:'MSSQL',1521:'Oracle',3306:'MySQL',3389:'RDP',5432:'PostgreSQL',5900:'VNC',6379:'Redis',8080:'HTTP-Alt',8443:'HTTPS-Alt',27017:'MongoDB'};
 const PROTOS={1:'ICMP',6:'TCP',17:'UDP',47:'GRE',50:'ESP'};
-
 const V2_FIELDS=['version','account-id','interface-id','srcaddr','dstaddr','srcport','dstport','protocol','packets','bytes','start','end','action','log-status'];
 const RFC1918=[{s:0x0A000000,m:0xFF000000},{s:0xAC100000,m:0xFFF00000},{s:0xC0A80000,m:0xFFFF0000}];
+const HIGH_RISK_PORTS={20:'FTP-Data',21:'FTP',22:'SSH',23:'Telnet',135:'RPC',137:'NetBIOS',445:'SMB',1433:'MSSQL',3306:'MySQL',3389:'RDP',4333:'Reserved',5432:'PostgreSQL',5900:'VNC',6379:'Redis',27017:'MongoDB'};
 
 let allRecords=[], geoCache={}, currentFilter={action:'all',protocol:'all',search:'',eni:'all'};
+
+// === THEME ===
+function toggleTheme(){
+  const d=document.documentElement;
+  const next=d.getAttribute('data-theme')==='dark'?'light':'dark';
+  d.setAttribute('data-theme',next);
+  localStorage.setItem('theme',next);
+  document.getElementById('themeBtn').textContent=next==='dark'?'☀️':'🌙';
+}
+(function(){
+  const saved=localStorage.getItem('theme')||(window.matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light');
+  if(saved==='dark'){document.documentElement.setAttribute('data-theme','dark');document.addEventListener('DOMContentLoaded',()=>{const b=document.getElementById('themeBtn');if(b)b.textContent='☀️';});}
+})();
+
+// === BACK TO TOP ===
+window.addEventListener('scroll',()=>{
+  const btn=document.getElementById('backToTop');
+  if(btn)btn.classList.toggle('show',window.scrollY>400);
+});
 
 // === HELPERS ===
 function isPrivate(ip){
@@ -33,12 +52,19 @@ dz.ondragleave=()=>dz.classList.remove('over');
 dz.ondrop=e=>{e.preventDefault();dz.classList.remove('over');if(e.dataTransfer.files[0])processFile(e.dataTransfer.files[0])};
 
 function processFile(file){
-  document.getElementById('loading').classList.add('show');
-  document.getElementById('loading').innerHTML='⏳ Reading file...';
+  const loading=document.getElementById('loading');
+  const pFill=document.getElementById('progressFill');
+  loading.classList.add('show');
+  loading.querySelector('span')||loading.insertAdjacentHTML('afterbegin','<span></span>');
+  const span=loading.querySelector('span')||loading;
+  span.textContent=`⏳ Reading ${(file.size/1048576).toFixed(1)} MB...`;
+  pFill.style.width='10%';
   document.getElementById('results').style.display='none';
   const reader=new FileReader();
+  reader.onprogress=e=>{if(e.lengthComputable)pFill.style.width=Math.round(e.loaded/e.total*40)+'%';};
   reader.onload=e=>{
-    document.getElementById('loading').innerHTML='⏳ Parsing flow log records...';
+    span.textContent='⏳ Parsing flow log records...';
+    pFill.style.width='50%';
     setTimeout(()=>parseAndRender(e.target.result),100);
   };
   reader.readAsText(file);
@@ -54,6 +80,7 @@ function detectFields(line){
 }
 
 function parseAndRender(text){
+  const pFill=document.getElementById('progressFill');
   const lines=text.trim().split('\n').filter(l=>l.trim());
   if(lines.length<2){showError('File has fewer than 2 lines');return}
   const det=detectFields(lines[0]);
@@ -62,6 +89,7 @@ function parseAndRender(text){
   const hasHeader=isCSV||fields!==V2_FIELDS||lines[0].includes('version');
   const dataLines=hasHeader?lines.slice(1):lines;
   allRecords=[];
+  pFill.style.width='60%';
   for(const line of dataLines){
     const parts=isCSV?line.replace(/"/g,'').split(','):line.trim().split(/\s+/);
     if(parts.length<fields.length)continue;
@@ -80,27 +108,29 @@ function parseAndRender(text){
     allRecords.push(r);
   }
   if(!allRecords.length){showError('No valid flow records found');return}
-  document.getElementById('loading').innerHTML='⏳ Rendering dashboard...';
-  setTimeout(()=>render(),50);
+  pFill.style.width='80%';
+  // Shrink dropzone for re-upload
+  const dz=document.getElementById('dropzone');
+  dz.classList.add('mini');
+  document.querySelector('.privacy').style.display='none';
+  document.getElementById('exportBtn').classList.add('show');
+  setTimeout(()=>{pFill.style.width='100%';setTimeout(()=>render(),50);},50);
 }
 
 function showError(msg){
   document.getElementById('loading').classList.remove('show');
   document.getElementById('results').style.display='block';
-  document.getElementById('results').innerHTML=`<div class="card" style="border-left-color:#d13212"><b>Error:</b> ${msg}</div>`;
+  document.getElementById('results').innerHTML=`<div class="card" style="border-left-color:var(--danger)"><b>Error:</b> ${msg}</div>`;
 }
 
 // === GEOIP ===
-// Resolve only IPs shown in top 20 tables
 async function resolveAllGeo(){
   const recs=applyFilters();
   const inbound=recs.filter(r=>isInbound(r));
   const outbound=recs.filter(r=>!isInbound(r));
-  // Collect top inbound source IPs
   const inMap={};
   inbound.forEach(r=>{inMap[r.srcaddr]=(inMap[r.srcaddr]||0)+1;});
   const inTopIPs=Object.entries(inMap).sort((a,b)=>b[1]-a[1]).slice(0,20).map(([ip])=>ip);
-  // Collect top outbound dest IPs
   const outMap={};
   outbound.forEach(r=>{outMap[r.dstaddr]=(outMap[r.dstaddr]||0)+r._bytes;});
   const outTopIPs=Object.entries(outMap).sort((a,b)=>b[1]-a[1]).slice(0,20).map(([ip])=>ip);
@@ -131,26 +161,83 @@ function flag(cc){
   if(cc==='🏠')return'🏠';if(!cc||cc==='??')return'🌐';
   return String.fromCodePoint(...[...cc.toUpperCase()].map(c=>0x1F1E6+c.charCodeAt(0)-65));
 }
-let _btnId=0;
-function ipGeoCell(ip){
-  const g=geoFor(ip);
-  if(g)return`${flag(g.cc)} ${g.country}`;
-  return'—';
-}
-function ipOrgCell(ip){
-  const g=geoFor(ip);
-  return g?g.org:'—';
-}
+function ipGeoCell(ip){const g=geoFor(ip);return g?`${flag(g.cc)} ${g.country}`:'—';}
+function ipOrgCell(ip){const g=geoFor(ip);return g?g.org:'—';}
 
-// AWS Config restricted-common-ports reference:
-// https://docs.aws.amazon.com/config/latest/developerguide/restricted-common-ports.html
-const HIGH_RISK_PORTS={20:'FTP-Data',21:'FTP',22:'SSH',23:'Telnet',135:'RPC',137:'NetBIOS',445:'SMB',1433:'MSSQL',3306:'MySQL',3389:'RDP',4333:'Reserved',5432:'PostgreSQL',5900:'VNC',6379:'Redis',27017:'MongoDB'};
+// === TABLE SORTING ===
+function makeSortable(){
+  document.querySelectorAll('.tw table').forEach(table=>{
+    table.querySelectorAll('th').forEach((th,colIdx)=>{
+      if(th.dataset.sortBound)return;
+      th.dataset.sortBound='1';
+      th.innerHTML+=` <span class="sort-arrow">↕</span>`;
+      th.addEventListener('click',()=>{
+        const tbody=table.querySelector('tbody');
+        if(!tbody)return;
+        const rows=[...tbody.querySelectorAll('tr')];
+        const asc=th.dataset.sort!=='asc';
+        table.querySelectorAll('th').forEach(h=>{h.classList.remove('sorted');h.dataset.sort='';});
+        th.classList.add('sorted');
+        th.dataset.sort=asc?'asc':'desc';
+        rows.sort((a,b)=>{
+          const ac=a.cells[colIdx],bc=b.cells[colIdx];
+          if(!ac||!bc)return 0;
+          const av=ac.textContent.trim(),bv=bc.textContent.trim();
+          const an=parseFloat(av.replace(/[,%]/g,'')),bn=parseFloat(bv.replace(/[,%]/g,''));
+          if(!isNaN(an)&&!isNaN(bn))return asc?an-bn:bn-an;
+          return asc?av.localeCompare(bv):bv.localeCompare(av);
+        });
+        rows.forEach(r=>tbody.appendChild(r));
+      });
+    });
+  });
+}
 
 // === CLASSIFY DIRECTION ===
 function isInbound(r){
   if(r['flow-direction']==='ingress')return true;
   if(r['flow-direction']==='egress')return false;
-  return !isPrivate(r.srcaddr); // no direction field: public src = inbound
+  return !isPrivate(r.srcaddr);
+}
+
+// === FILTERS ===
+function applyFilters(){
+  return allRecords.filter(r=>{
+    if(currentFilter.action!=='all'&&r.action!==currentFilter.action)return false;
+    if(currentFilter.protocol!=='all'&&r._protocol!==parseInt(currentFilter.protocol))return false;
+    if(currentFilter.eni!=='all'&&r['interface-id']!==currentFilter.eni)return false;
+    if(currentFilter.search&&!r.srcaddr.includes(currentFilter.search)&&!r.dstaddr.includes(currentFilter.search))return false;
+    return true;
+  });
+}
+function applyAndRender(){
+  currentFilter.action=document.getElementById('fAction').value;
+  currentFilter.protocol=document.getElementById('fProto').value;
+  currentFilter.eni=document.getElementById('fEni').value;
+  currentFilter.search=document.getElementById('fSearch').value;
+  render();
+}
+function resetFilters(){currentFilter={action:'all',protocol:'all',search:'',eni:'all'};render();}
+
+// === EXPORT ===
+function exportCSV(){
+  const recs=applyFilters();
+  if(!recs.length){alert('No records to export');return}
+  const inbound=recs.filter(r=>isInbound(r));
+  const outbound=recs.filter(r=>!isInbound(r));
+  let csv='VPC Flow Log Analysis Summary\n';
+  csv+=`Total Records,${recs.length}\nInbound Flows,${inbound.length}\nOutbound Flows,${outbound.length}\n`;
+  csv+=`Accepted,${recs.filter(r=>r.action==='ACCEPT').length}\nRejected,${recs.filter(r=>r.action==='REJECT').length}\n`;
+  csv+=`Total Bytes,${recs.reduce((s,r)=>s+r._bytes,0)}\n\n`;
+  csv+='Top Inbound Source IPs\nIP,Flows,Accepted,Rejected,Bytes\n';
+  const srcMap={};
+  inbound.forEach(r=>{if(!srcMap[r.srcaddr])srcMap[r.srcaddr]={f:0,a:0,rj:0,b:0};const d=srcMap[r.srcaddr];d.f++;d.b+=r._bytes;r.action==='ACCEPT'?d.a++:d.rj++;});
+  Object.entries(srcMap).sort((a,b)=>b[1].f-a[1].f).slice(0,20).forEach(([ip,d])=>{csv+=`${ip},${d.f},${d.a},${d.rj},${d.b}\n`;});
+  const blob=new Blob([csv],{type:'text/csv'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download='flowlog-analysis.csv';
+  a.click();
 }
 
 // === RENDER ===
@@ -174,7 +261,13 @@ function render(){
   const eniOpts=eniList.map(e=>`<option value="${e}">${e}</option>`).join('');
 
   let html=`
-  <div class="card" style="border-left-color:#0972d3">
+  <nav class="section-nav" aria-label="Dashboard sections">
+    <a href="#sec-eni">🔌 ENIs</a>
+    <a href="#sec-inbound">⬇ Inbound</a>
+    <a href="#sec-outbound">⬆ Outbound</a>
+    <a href="#sec-timeline">📊 Timeline</a>
+  </nav>
+  <div class="card" style="border-left-color:var(--accent)">
     <b>${allRecords.length.toLocaleString()}</b> records parsed | Showing: <b>${total.toLocaleString()}</b> (⬇ ${inbound.length.toLocaleString()} inbound, ⬆ ${outbound.length.toLocaleString()} outbound) | Period: ${timeRange}<br>
     ${accounts.length?'<b>Account:</b> '+accounts.join(', ')+' | ':''}${vpcs.length?'<b>VPC:</b> '+vpcs.join(', ')+' | ':''}${subnets.length?'<b>Subnets:</b> '+subnets.join(', ')+' | ':''}${enis.length?'<b>ENIs:</b> '+enis.join(', '):''}
     ${privateIPs.length?'<br><b>Internal IPs:</b> '+privateIPs.slice(0,5).join(', ')+(privateIPs.length>5?' (+'+(privateIPs.length-5)+' more)':''):''}
@@ -185,31 +278,36 @@ function render(){
     <label>ENI:</label><select id="fEni"><option value="all">All ENIs</option>${eniOpts}</select>
     <label>Search IP:</label><input id="fSearch" placeholder="e.g. 10.0.1.">
     <button onclick="applyAndRender()">Apply</button>
-    <button onclick="resetFilters()" style="background:#5f6b7a">Reset</button>
-    <button id="resolveAllBtn" onclick="resolveAllGeo()" style="background:#ec7211">🌍 Resolve GeoIP</button>
+    <button onclick="resetFilters()" style="background:var(--muted)">Reset</button>
+    <button id="resolveAllBtn" onclick="resolveAllGeo()" style="background:var(--warn)" title="Resolve country and org for top IPs using free GeoIP APIs">🌍 Resolve GeoIP</button>
   </div>`;
 
+  html+=`<div id="sec-eni">`;
   html+=eniTable(recs);
+  html+=`</div>`;
 
-  // === INBOUND SECTION ===
-  html+=`<h2 style="color:#0972d3;font-size:1.3em;border-bottom:3px solid #0972d3">⬇ Inbound Traffic (${inbound.length.toLocaleString()} flows, ${formatBytes(inbound.reduce((s,r)=>s+r._bytes,0))})</h2>`;
+  html+=`<div id="sec-inbound">`;
+  html+=`<h2 style="color:var(--accent);font-size:1.3em;border-bottom:3px solid var(--accent)">⬇ Inbound Traffic (${inbound.length.toLocaleString()} flows, ${formatBytes(inbound.reduce((s,r)=>s+r._bytes,0))})</h2>`;
   html+=summaryGrid(inbound);
   html+=topSourceIPs(inbound);
   html+=topPorts(inbound,'dstport','Top Inbound Destination Ports');
   html+=geoTable(inbound,'srcaddr');
   html+=protocolBreakdown(inbound);
+  html+=`</div>`;
 
-  // === OUTBOUND SECTION ===
-  html+=`<h2 style="color:#ec7211;font-size:1.3em;border-bottom:3px solid #ec7211">⬆ Outbound Traffic (${outbound.length.toLocaleString()} flows, ${formatBytes(outbound.reduce((s,r)=>s+r._bytes,0))})</h2>`;
+  html+=`<div id="sec-outbound">`;
+  html+=`<h2 style="color:var(--warn);font-size:1.3em;border-bottom:3px solid var(--warn)">⬆ Outbound Traffic (${outbound.length.toLocaleString()} flows, ${formatBytes(outbound.reduce((s,r)=>s+r._bytes,0))})</h2>`;
   html+=summaryGrid(outbound);
   html+=topDestIPs(outbound);
   html+=topPorts(outbound,'dstport','Top Outbound Destination Ports');
   html+=geoTable(outbound,'dstaddr');
   html+=protocolBreakdown(outbound);
+  html+=`</div>`;
 
-  // === COMBINED ===
-  html+=`<h2 style="font-size:1.3em;border-bottom:3px solid #5f6b7a">📊 Combined Timeline</h2>`;
+  html+=`<div id="sec-timeline">`;
+  html+=`<h2 style="font-size:1.3em;border-bottom:3px solid var(--muted)">📊 Combined Timeline</h2>`;
   html+=timeline(recs);
+  html+=`</div>`;
 
   R.innerHTML=html;
   R.style.display='block';
@@ -218,9 +316,10 @@ function render(){
   document.getElementById('fProto').value=currentFilter.protocol;
   document.getElementById('fEni').value=currentFilter.eni;
   document.getElementById('fSearch').value=currentFilter.search;
+  makeSortable();
 }
 
-// === SUMMARY GRID (reusable) ===
+// === SUMMARY GRID ===
 function summaryGrid(recs){
   const accepted=recs.filter(r=>r.action==='ACCEPT').length;
   const rejected=recs.filter(r=>r.action==='REJECT').length;
@@ -236,24 +335,6 @@ function summaryGrid(recs){
     <div class="s in"><div class="n">${formatBytes(bytes)}</div><div class="l">Traffic</div></div>
   </div>`;
 }
-
-function applyFilters(){
-  return allRecords.filter(r=>{
-    if(currentFilter.action!=='all'&&r.action!==currentFilter.action)return false;
-    if(currentFilter.protocol!=='all'&&r._protocol!==parseInt(currentFilter.protocol))return false;
-    if(currentFilter.eni!=='all'&&r['interface-id']!==currentFilter.eni)return false;
-    if(currentFilter.search&&!r.srcaddr.includes(currentFilter.search)&&!r.dstaddr.includes(currentFilter.search))return false;
-    return true;
-  });
-}
-function applyAndRender(){
-  currentFilter.action=document.getElementById('fAction').value;
-  currentFilter.protocol=document.getElementById('fProto').value;
-  currentFilter.eni=document.getElementById('fEni').value;
-  currentFilter.search=document.getElementById('fSearch').value;
-  render();
-}
-function resetFilters(){currentFilter={action:'all',protocol:'all',search:'',eni:'all'};render();}
 
 // === ENI BREAKDOWN ===
 function eniTable(recs){
@@ -273,7 +354,6 @@ function eniTable(recs){
       map[eni].bytesOut+=r._bytes;
       map[eni].dstIPs.add(r.dstaddr);
     }
-    // Track which private IPs are on this ENI
     [r.srcaddr,r.dstaddr].forEach(ip=>{if(isPrivate(ip)&&ip!=='0.0.0.0')map[eni].privateIPs.add(ip);});
   });
   const sorted=Object.entries(map).sort((a,b)=>(b[1].inAccept+b[1].inReject+b[1].outAccept+b[1].outReject)-(a[1].inAccept+a[1].inReject+a[1].outAccept+a[1].outReject));
@@ -292,7 +372,7 @@ function eniTable(recs){
   return html+'</tbody></table></div>';
 }
 
-// === TOP INBOUND SOURCE IPs (combined: bytes + ports + restricted) ===
+// === TOP INBOUND SOURCE IPs ===
 function topSourceIPs(recs){
   const map={};
   recs.forEach(r=>{
@@ -310,7 +390,6 @@ function topSourceIPs(recs){
   let html=`<h3>🎯 Top 20 Inbound Source IPs — of ${Object.keys(map).length} (<a href="https://docs.aws.amazon.com/config/latest/developerguide/restricted-common-ports.html">AWS Config Restricted Ports</a> flagged)</h3>
   <div class="tw"><table><thead><tr><th>Source IP</th><th>Country</th><th>Org</th><th>Flows</th><th>Accepted</th><th>Rejected</th><th>Bytes</th><th>Unique Ports</th><th>Restricted Ports Hit</th><th>SYN-only %</th></tr></thead><tbody>`;
   sorted.forEach(([ip,d])=>{
-    const rp=d.flows?Math.round(d.rejected/d.flows*100):0;
     const sp=d.flows?Math.round(d.synOnly/d.flows*100):0;
     const rList=[...d.hrPorts].map(p=>p+'/'+(HIGH_RISK_PORTS[p]||'')).join(', ');
     html+=`<tr><td><b>${ip}</b></td><td>${ipGeoCell(ip)}</td><td>${ipOrgCell(ip)}</td>
@@ -322,10 +401,8 @@ function topSourceIPs(recs){
   return html+'</tbody></table></div>';
 }
 
-// === TOP OUTBOUND DESTINATION IPs (exclude ENI's own IPs) ===
+// === TOP OUTBOUND DESTINATION IPs ===
 function topDestIPs(recs){
-  // Detect IPs that belong to each ENI:
-  // egress: srcaddr is the ENI's IP. ingress: dstaddr is the ENI's IP.
   const eniIPs=new Set();
   allRecords.forEach(r=>{
     const eni=r['interface-id'];
@@ -334,7 +411,6 @@ function topDestIPs(recs){
     if(dir==='egress')eniIPs.add(r.srcaddr);
     else if(dir==='ingress')eniIPs.add(r.dstaddr);
   });
-  // Fallback if no flow-direction: IPs that appear as BOTH src and dst on same ENI
   if(!eniIPs.size){
     const perEni={};
     allRecords.forEach(r=>{
@@ -348,7 +424,7 @@ function topDestIPs(recs){
   const map={};
   recs.forEach(r=>{
     const ip=r.dstaddr;
-    if(eniIPs.has(ip))return; // Skip traffic to own ENI IPs
+    if(eniIPs.has(ip))return;
     if(!map[ip])map[ip]={bytes:0,flows:0,accepted:0,rejected:0,ports:new Set(),priv:isPrivate(ip)};
     const d=map[ip];
     d.flows++;d.bytes+=r._bytes;
@@ -368,7 +444,7 @@ function topDestIPs(recs){
   return html+'</tbody></table></div>';
 }
 
-// === GEO TABLE (reusable, ipField = which field to geolocate) ===
+// === GEO TABLE ===
 function geoTable(recs,ipField){
   const map={};
   recs.forEach(r=>{
@@ -393,7 +469,7 @@ function geoTable(recs,ipField){
   return html+'</tbody></table></div>';
 }
 
-// === TOP PORTS (reusable) ===
+// === TOP PORTS ===
 function topPorts(recs,portField,title){
   const map={};
   recs.forEach(r=>{const p=parseInt(r[portField])||0;if(!p)return;if(!map[p])map[p]={accept:0,reject:0};r.action==='ACCEPT'?map[p].accept++:map[p].reject++;});
@@ -432,9 +508,7 @@ function timeline(recs){
   sorted.forEach(([hour,d])=>{
     const t=d.accept+d.reject;const ap=maxT?Math.round(d.accept/maxT*100):0;const rp=maxT?Math.round(d.reject/maxT*100):0;
     html+=`<tr><td>${hour}</td><td>${d.accept.toLocaleString()}</td><td>${d.reject.toLocaleString()}</td><td>${t.toLocaleString()}</td>
-    <td><div class="bar"><div class="fill" style="width:${ap}%;background:#037f0c"></div><div class="fill" style="width:${rp}%;background:#d13212"></div></div></td></tr>`;
+    <td><div class="bar"><div class="fill" style="width:${ap}%;background:var(--success)"></div><div class="fill" style="width:${rp}%;background:var(--danger)"></div></div></td></tr>`;
   });
   return html+'</tbody></table></div>';
 }
-
-// (old topIPs/topTalkers replaced by topSourceIPs/topDestIPs)

@@ -5,55 +5,92 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>VPC Flow Log Analyzer</title>
 <style>
+:root{--bg:#f2f3f3;--surface:#fff;--border:#e9ebed;--text:#16191f;--muted:#5f6b7a;--accent:#0972d3;--accent-hover:#033160;--danger:#d13212;--success:#037f0c;--warn:#ec7211;--topbar:#232f3e;--sticky-bg:#ffffffee;--tag-danger-bg:#fdf3f1;--tag-success-bg:#f2fcf3;--tag-warn-bg:#fef8f1;--tag-info-bg:#f2f8fd}
+[data-theme="dark"]{--bg:#0f1b2d;--surface:#1a2744;--border:#2a3f5f;--text:#d1d5db;--muted:#8899a6;--accent:#539fe5;--accent-hover:#89bcf0;--danger:#ff6b6b;--success:#51cf66;--warn:#ffa94d;--topbar:#0a1628;--sticky-bg:#1a2744ee;--tag-danger-bg:#3a1a1a;--tag-success-bg:#1a3a1a;--tag-warn-bg:#3a2a1a;--tag-info-bg:#1a2a3a}
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,system-ui,sans-serif;background:#f2f3f3;color:#16191f;font-size:14px}
-.topbar{background:#232f3e;padding:12px 24px;display:flex;align-items:center;gap:12px}
+body{font-family:-apple-system,system-ui,sans-serif;background:var(--bg);color:var(--text);font-size:14px;transition:background .2s,color .2s}
+.topbar{background:var(--topbar);padding:12px 24px;display:flex;align-items:center;gap:12px;position:sticky;top:0;z-index:100}
 .topbar .title{color:#fff;font-size:1.1em;font-weight:600}
 .topbar .badge{background:#ec7211;color:#fff;padding:2px 10px;border-radius:4px;font-size:.75em;font-weight:600}
+.topbar-right{margin-left:auto;display:flex;align-items:center;gap:10px}
+.theme-toggle{background:none;border:1px solid #ffffff44;color:#fff;padding:4px 10px;border-radius:6px;cursor:pointer;font-size:.85em}
+.theme-toggle:hover{background:#ffffff22}
 .c{max-width:1400px;margin:0 auto;padding:20px 24px}
-.drop{border:2px dashed #aab7b8;border-radius:12px;padding:60px 20px;text-align:center;background:#fff;cursor:pointer;transition:all .2s}
-.drop:hover,.drop.over{border-color:#0972d3;background:#f2f8fd}
-.drop h2{color:#16191f;margin-bottom:8px}
-.drop p{color:#5f6b7a;font-size:.9em}
+.drop{border:2px dashed #aab7b8;border-radius:12px;padding:60px 20px;text-align:center;background:var(--surface);cursor:pointer;transition:all .2s}
+.drop:hover,.drop.over{border-color:var(--accent);background:var(--tag-info-bg)}
+.drop h2{color:var(--text);margin-bottom:8px}
+.drop p{color:var(--muted);font-size:.9em}
 .drop input{display:none}
-.privacy{background:#f2fcf3;border:1px solid #037f0c33;border-radius:8px;padding:12px 16px;margin-top:12px;font-size:.82em;color:#037f0c}
+.drop.mini{padding:12px 16px;margin-bottom:12px;display:flex;align-items:center;justify-content:center;gap:8px;border-width:1px}
+.drop.mini h2{font-size:.85em;margin:0}
+.drop.mini p{display:none}
+.privacy{background:var(--tag-success-bg);border:1px solid var(--success);border-radius:8px;padding:12px 16px;margin-top:12px;font-size:.82em;color:var(--success);opacity:.85}
 #results{display:none}
+.section-nav{background:var(--sticky-bg);backdrop-filter:blur(8px);border:1px solid var(--border);border-radius:8px;padding:8px 12px;margin-bottom:16px;display:flex;gap:6px;flex-wrap:wrap;position:sticky;top:52px;z-index:50}
+.section-nav a{padding:4px 12px;border-radius:4px;font-size:.78em;color:var(--accent);text-decoration:none;font-weight:600;border:1px solid transparent;white-space:nowrap}
+.section-nav a:hover{background:var(--tag-info-bg);border-color:var(--accent)}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin:20px 0}
-.s{background:#fff;border-radius:8px;padding:14px;text-align:center;border:1px solid #e9ebed}
-.s .n{font-size:1.5em;font-weight:700}.s .l{color:#5f6b7a;font-size:.72em;margin-top:2px}
-.s.cr .n{color:#d13212}.s.ok .n{color:#037f0c}.s.in .n{color:#0972d3}.s.wa .n{color:#ec7211}
-h2{color:#16191f;margin:28px 0 10px;font-size:1.15em;font-weight:700;border-bottom:2px solid #e9ebed;padding-bottom:8px}
-.sub{color:#5f6b7a;font-size:.82em;margin-bottom:10px}
-.tw{overflow-x:auto;margin-bottom:16px;border-radius:8px;background:#fff;border:1px solid #e9ebed;max-height:60vh;overflow-y:auto}
-table{border-collapse:collapse;font-size:.8em;white-space:nowrap;min-width:100%;background:#fff}
-th{background:#fafafa;padding:8px 10px;text-align:left;font-size:.7em;text-transform:uppercase;color:#5f6b7a;font-weight:600;position:sticky;top:0;border-bottom:2px solid #e9ebed;cursor:pointer;z-index:2}
-th:hover{color:#0972d3}
-td{padding:6px 10px;border-bottom:1px solid #e9ebed}
-tr:hover{background:#f2f8fd}
+.s{background:var(--surface);border-radius:8px;padding:14px;text-align:center;border:1px solid var(--border)}
+.s .n{font-size:1.5em;font-weight:700}.s .l{color:var(--muted);font-size:.72em;margin-top:2px}
+.s.cr .n{color:var(--danger)}.s.ok .n{color:var(--success)}.s.in .n{color:var(--accent)}.s.wa .n{color:var(--warn)}
+h2{color:var(--text);margin:28px 0 10px;font-size:1.15em;font-weight:700;border-bottom:2px solid var(--border);padding-bottom:8px}
+.sub{color:var(--muted);font-size:.82em;margin-bottom:10px}
+.tw{overflow-x:auto;margin-bottom:16px;border-radius:8px;background:var(--surface);border:1px solid var(--border);max-height:60vh;overflow-y:auto}
+table{border-collapse:collapse;font-size:.8em;white-space:nowrap;min-width:100%;background:var(--surface)}
+th{background:var(--bg);padding:8px 10px;text-align:left;font-size:.7em;text-transform:uppercase;color:var(--muted);font-weight:600;position:sticky;top:0;border-bottom:2px solid var(--border);cursor:pointer;z-index:2;user-select:none}
+th:hover{color:var(--accent)}
+th .sort-arrow{font-size:.7em;margin-left:2px;opacity:.4}
+th.sorted .sort-arrow{opacity:1}
+td{padding:6px 10px;border-bottom:1px solid var(--border);color:var(--text)}
+tr:hover{background:var(--tag-info-bg)}
 .t{display:inline-block;padding:2px 8px;border-radius:4px;font-size:.76em;font-weight:600}
-.cr{background:#fdf3f1;color:#d13212;border:1px solid #d1321233}
-.ok{background:#f2fcf3;color:#037f0c;border:1px solid #037f0c33}
-.wa{background:#fef8f1;color:#ec7211;border:1px solid #ec721133}
-.in{background:#f2f8fd;color:#0972d3;border:1px solid #0972d333}
-.bar{height:8px;border-radius:3px;background:#e9ebed;display:flex;overflow:hidden;width:200px}
+.cr{background:var(--tag-danger-bg);color:var(--danger);border:1px solid currentColor}
+.ok{background:var(--tag-success-bg);color:var(--success);border:1px solid currentColor}
+.wa{background:var(--tag-warn-bg);color:var(--warn);border:1px solid currentColor}
+.in{background:var(--tag-info-bg);color:var(--accent);border:1px solid currentColor}
+.bar{height:8px;border-radius:3px;background:var(--border);display:flex;overflow:hidden;width:200px}
 .bar .fill{height:100%}
-.card{background:#fff;border-radius:8px;padding:16px;margin-bottom:12px;border:1px solid #e9ebed;border-left:4px solid #0972d3}
-.filters{background:#fff;border:1px solid #e9ebed;border-radius:8px;padding:16px;margin:16px 0;display:flex;gap:12px;flex-wrap:wrap;align-items:center}
-.filters label{font-size:.82em;color:#5f6b7a;font-weight:600}
-.filters select,.filters input{padding:6px 10px;border:1px solid #aab7b8;border-radius:6px;font-size:.85em;outline:none}
-.filters select:focus,.filters input:focus{border-color:#0972d3;box-shadow:0 0 0 2px #0972d322}
-.filters button{padding:6px 16px;background:#0972d3;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:.85em;font-weight:600}
-.filters button:hover{background:#033160}
-.footer{text-align:center;color:#5f6b7a;margin-top:30px;font-size:.78em;padding:16px;border-top:1px solid #e9ebed}
-.loading{display:none;text-align:center;padding:40px;color:#5f6b7a}
+.card{background:var(--surface);border-radius:8px;padding:16px;margin-bottom:12px;border:1px solid var(--border);border-left:4px solid var(--accent)}
+.filters{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:16px;margin:16px 0;display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+.filters label{font-size:.82em;color:var(--muted);font-weight:600}
+.filters select,.filters input{padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:.85em;outline:none;background:var(--surface);color:var(--text)}
+.filters select:focus,.filters input:focus{border-color:var(--accent);box-shadow:0 0 0 2px rgba(9,114,211,.15)}
+.filters button{padding:6px 16px;background:var(--accent);color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:.85em;font-weight:600}
+.filters button:hover{background:var(--accent-hover)}
+.footer{text-align:center;color:var(--muted);margin-top:30px;font-size:.78em;padding:16px;border-top:1px solid var(--border)}
+.footer a{color:var(--accent)}
+.loading{display:none;text-align:center;padding:40px;color:var(--muted)}
 .loading.show{display:block}
-.geo-status{font-size:.82em;color:#5f6b7a;margin:8px 0}
+.progress-bar{width:100%;max-width:300px;height:6px;background:var(--border);border-radius:3px;margin:12px auto 0;overflow:hidden}
+.progress-bar .fill{height:100%;background:var(--accent);border-radius:3px;transition:width .3s}
+.back-to-top{position:fixed;bottom:24px;right:24px;width:40px;height:40px;border-radius:50%;background:var(--accent);color:#fff;border:none;cursor:pointer;font-size:1.2em;display:none;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(0,0,0,.2);z-index:200;transition:opacity .2s}
+.back-to-top:hover{background:var(--accent-hover)}
+.back-to-top.show{display:flex}
+.export-btn{padding:4px 12px;background:none;border:1px solid #ffffff44;color:#fff;border-radius:6px;cursor:pointer;font-size:.8em;display:none}
+.export-btn:hover{background:#ffffff22}
+.export-btn.show{display:inline-block}
+@media(max-width:768px){
+  .topbar{padding:10px 12px;flex-wrap:wrap}
+  .topbar .badge{font-size:.65em}
+  .c{padding:12px}
+  .grid{grid-template-columns:repeat(3,1fr);gap:6px}
+  .s{padding:10px}
+  .s .n{font-size:1.2em}
+  .filters{flex-direction:column;align-items:stretch}
+  .filters select,.filters input,.filters button{width:100%}
+  .section-nav{top:auto;position:relative;overflow-x:auto;flex-wrap:nowrap}
+  .section-nav a{flex-shrink:0}
+}
 </style>
 </head>
 <body>
 <div class="topbar">
   <span class="title">🔍 VPC Flow Log Analyzer</span>
   <span class="badge">Client-Side • Your data never leaves your browser</span>
+  <div class="topbar-right">
+    <button class="export-btn" id="exportBtn" onclick="exportCSV()" title="Export summary to CSV">📥 Export</button>
+    <button class="theme-toggle" id="themeBtn" onclick="toggleTheme()" title="Toggle dark/light mode">🌙</button>
+  </div>
 </div>
 <div class="c">
   <div id="upload">
@@ -64,9 +101,13 @@ tr:hover{background:#f2f8fd}
     </div>
     <div class="privacy">🔒 All processing happens locally in JavaScript. GeoIP lookups use free APIs (ip-api.com batch + ipwho.is fallback). No data is stored anywhere.</div>
   </div>
-  <div class="loading" id="loading">⏳ Parsing flow log records...</div>
+  <div class="loading" id="loading">
+    ⏳ Parsing flow log records...
+    <div class="progress-bar"><div class="fill" id="progressFill" style="width:0%"></div></div>
+  </div>
   <div id="results"></div>
 </div>
+<button class="back-to-top" id="backToTop" onclick="window.scrollTo({top:0,behavior:'smooth'})" title="Back to top">↑</button>
 <div class="footer">VPC Flow Log Analyzer — 100% client-side | <a href="https://docs.aws.amazon.com/vpc/latest/userguide/flow-log-records.html">AWS Flow Log Docs</a> | GeoIP by <a href="https://ipwho.is">ipwho.is</a></div>
 <script src="app.js"></script>
 </body>
