@@ -409,18 +409,20 @@ function topSourceIPs(recs){
   const sorted=Object.entries(map).sort((a,b)=>b[1].flows-a[1].flows).slice(0,20);
   if(!sorted.length)return'';
   let html=`<h3>🎯 Top 20 Inbound Source IPs — of ${Object.keys(map).length} (<a href="https://docs.aws.amazon.com/config/latest/developerguide/restricted-common-ports.html">AWS Config Restricted Ports</a> flagged)</h3>
-  <div class="tw"><table><thead><tr><th>Source IP</th><th>Country</th><th>Org</th><th>Restricted Ports Hit</th><th>SYN-only %</th><th>Rejected</th><th>Accepted</th><th>Flows</th><th>Bytes</th><th>Unique Ports</th></tr></thead><tbody>`;
+  <div class="tw"><table><thead><tr><th>Source IP</th><th>Country</th><th>Org</th><th>Restricted Ports Hit</th><th>SYN %</th><th>Blocked</th><th>Allowed</th><th>Flows</th><th>Bytes</th></tr></thead><tbody>`;
   sorted.forEach(([ip,d])=>{
     const sp=d.flows?Math.round(d.synOnly/d.flows*100):0;
     const rList=[...d.hrPorts].map(p=>`<a href="#" onclick="filterByPort(${p});return false" class="port-chip">${p}/${HIGH_RISK_PORTS[p]||''}</a>`).join(' ');
     const rjPct=d.flows?Math.round(d.rejected/d.flows*100):0;
+    const acPct=d.flows?Math.round(d.accepted/d.flows*100):0;
+    // Allowed on restricted ports with 0% blocked = danger
+    const allowedCls=d.hrPorts.size&&rjPct===0?'cr':acPct>70&&d.hrPorts.size?'wa':'ok';
     html+=`<tr><td><b>${ip}</b></td><td>${ipGeoCell(ip)}</td><td>${ipOrgCell(ip)}</td>
     <td>${d.hrPorts.size?rList:'—'}</td>
     <td>${sp?`<span class="t ${sp>50?'cr':'wa'}">${sp}%</span>`:'—'}</td>
-    <td>${d.rejected.toLocaleString()} <span class="t ${rjPct>70?'cr':rjPct>30?'wa':'ok'}">${rjPct}%</span></td>
-    <td>${d.accepted.toLocaleString()}</td>
-    <td>${d.flows.toLocaleString()}</td><td>${formatBytes(d.bytes)}</td>
-    <td>${d.ports.size.toLocaleString()}</td></tr>`;
+    <td>${d.rejected?d.rejected.toLocaleString()+` <span class="t ${rjPct>70?'ok':rjPct>30?'wa':'cr'}">${rjPct}%</span>`:'<span class="t cr">None</span>'}</td>
+    <td>${d.accepted.toLocaleString()} <span class="t ${allowedCls}">${acPct}%</span></td>
+    <td>${d.flows.toLocaleString()}</td><td>${formatBytes(d.bytes)}</td></tr>`;
   });
   return html+'</tbody></table></div>';
 }
