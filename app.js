@@ -221,6 +221,12 @@ function applyAndRender(){
 }
 function resetFilters(){currentFilter={action:'all',protocol:'all',search:'',eni:'all',port:''};render();}
 
+function filterByPort(port){
+  currentFilter.port=String(port);
+  render();
+  window.scrollTo({top:0,behavior:'smooth'});
+}
+
 // === EXPORT ===
 function exportCSV(){
   const recs=applyFilters();
@@ -395,7 +401,7 @@ function topSourceIPs(recs){
   <div class="tw"><table><thead><tr><th>Source IP</th><th>Country</th><th>Org</th><th>Flows</th><th>Accepted</th><th>Rejected</th><th>Bytes</th><th>Unique Ports</th><th>Restricted Ports Hit</th><th>SYN-only %</th></tr></thead><tbody>`;
   sorted.forEach(([ip,d])=>{
     const sp=d.flows?Math.round(d.synOnly/d.flows*100):0;
-    const rList=[...d.hrPorts].map(p=>p+'/'+(HIGH_RISK_PORTS[p]||'')).join(', ');
+    const rList=[...d.hrPorts].map(p=>`<a href="#" onclick="filterByPort(${p});return false" style="cursor:pointer;text-decoration:underline">${p}/${HIGH_RISK_PORTS[p]||''}</a>`).join(', ');
     html+=`<tr><td><b>${ip}</b></td><td>${ipGeoCell(ip)}</td><td>${ipOrgCell(ip)}</td>
     <td>${d.flows.toLocaleString()}</td><td>${d.accepted.toLocaleString()}</td><td>${d.rejected.toLocaleString()}</td>
     <td>${formatBytes(d.bytes)}</td><td>${d.ports.size.toLocaleString()}</td>
@@ -483,7 +489,7 @@ function topPorts(recs,portField,title){
   let html=`<h3>🔌 ${title} — Top 20 of ${sorted.length}</h3><div class="tw"><table><thead><tr><th>Port</th><th>Service</th><th>Accepted</th><th>Rejected</th><th>Total</th><th>Reject %</th></tr></thead><tbody>`;
   top.forEach(([port,d])=>{
     const t=d.accept+d.reject;const rp=t?Math.round(d.reject/t*100):0;const cls=rp>70?'cr':rp>30?'wa':'ok';
-    html+=`<tr><td><b>${port}</b></td><td>${PORTS[port]||'—'}</td><td>${d.accept.toLocaleString()}</td><td>${d.reject.toLocaleString()}</td><td>${t.toLocaleString()}</td><td><span class="t ${cls}">${rp}%</span></td></tr>`;
+    html+=`<tr><td><a href="#" onclick="filterByPort(${port});return false" style="font-weight:700;text-decoration:underline;color:inherit;cursor:pointer">${port}</a></td><td>${PORTS[port]||'—'}</td><td>${d.accept.toLocaleString()}</td><td>${d.reject.toLocaleString()}</td><td>${t.toLocaleString()}</td><td><span class="t ${cls}">${rp}%</span></td></tr>`;
   });
   return html+'</tbody></table></div>';
 }
