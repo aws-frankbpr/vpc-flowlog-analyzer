@@ -395,9 +395,11 @@ function eniTable(recs){
 
 // === TOP INBOUND SOURCE IPs ===
 function topSourceIPs(recs){
-  const map={};
+  const extMap={}, intMap={};
   recs.forEach(r=>{
     const ip=r.srcaddr;
+    const priv=isPrivate(ip);
+    const map=priv?intMap:extMap;
     if(!map[ip])map[ip]={bytes:0,flows:0,accepted:0,rejected:0,ports:new Set(),hrPorts:new Set(),synOnly:0};
     const d=map[ip];
     d.flows++;d.bytes+=r._bytes;
@@ -406,25 +408,40 @@ function topSourceIPs(recs){
     if(HIGH_RISK_PORTS[r._dstport])d.hrPorts.add(r._dstport);
     if(r._tcpflags===2)d.synOnly++;
   });
-  const sorted=Object.entries(map).sort((a,b)=>b[1].flows-a[1].flows).slice(0,20);
-  if(!sorted.length)return'';
-  let html=`<h3>🎯 Top 20 Inbound Source IPs — of ${Object.keys(map).length} (<a href="https://docs.aws.amazon.com/config/latest/developerguide/restricted-common-ports.html">AWS Config Restricted Ports</a> flagged)</h3>
-  <div class="tw"><table><thead><tr><th>Source IP</th><th>Country</th><th>Org</th><th>Restricted Ports Hit</th><th>SYN %</th><th>Blocked</th><th>Allowed</th><th>Flows</th><th>Bytes</th></tr></thead><tbody>`;
-  sorted.forEach(([ip,d])=>{
-    const sp=d.flows?Math.round(d.synOnly/d.flows*100):0;
-    const rList=[...d.hrPorts].map(p=>`<a href="#" onclick="filterByPort(${p});return false" class="port-chip">${p}/${HIGH_RISK_PORTS[p]||''}</a>`).join(' ');
-    const rjPct=d.flows?Math.round(d.rejected/d.flows*100):0;
-    const acPct=d.flows?Math.round(d.accepted/d.flows*100):0;
-    // Allowed on restricted ports with 0% blocked = danger
-    const allowedCls=d.hrPorts.size&&rjPct===0?'cr':acPct>70&&d.hrPorts.size?'wa':'ok';
-    html+=`<tr><td><b>${ip}</b></td><td>${ipGeoCell(ip)}</td><td>${ipOrgCell(ip)}</td>
-    <td>${d.hrPorts.size?rList:'—'}</td>
-    <td>${sp?`<span class="t ${sp>50?'cr':'wa'}">${sp}%</span>`:'—'}</td>
-    <td>${d.rejected?d.rejected.toLocaleString()+` <span class="t ${rjPct>70?'ok':rjPct>30?'wa':'cr'}">${rjPct}%</span>`:'<span class="t cr">None</span>'}</td>
-    <td>${d.accepted.toLocaleString()} <span class="t ${allowedCls}">${acPct}%</span></td>
-    <td>${d.flows.toLocaleString()}</td><td>${formatBytes(d.bytes)}</td></tr>`;
-  });
-  return html+'</tbody></table></div>';
+  const extSorted=Object.entries(extMap).sort((a,b)=>b[1].flows-a[1].flows).slice(0,20);
+  const intSorted=Object.entries(intMap).sort((a,b)=>b[1].flows-a[1].flows).slice(0,10);
+  let html='';
+  if(extSorted.length){
+    html+=`<h3>🎯 Top 20 External Inbound Sources — of ${Object.keys(extMap).length} (<a href="https://docs.aws.amazon.com/config/latest/developerguide/restricted-common-ports.html">AWS Config Restricted Ports</a> flagged)</h3>
+    <div class="tw"><table><thead><tr><th>Source IP</th><th>Country</th><th>Org</th><th>Restricted Ports Hit</th><th>SYN %</th><th>Blocked</th><th>Allowed</th><th>Flows</th><th>Bytes</th></tr></thead><tbody>`;
+    extSorted.forEach(([ip,d])=>{
+      const sp=d.flows?Math.round(d.synOnly/d.flows*100):0;
+      const rList=[...d.hrPorts].map(p=>`<a href="#" onclick="filterByPort(${p});return false" class="port-chip">${p}/${HIGH_RISK_PORTS[p]||''}</a>`).join(' ');
+      const rjPct=d.flows?Math.round(d.rejected/d.flows*100):0;
+      const acPct=d.flows?Math.round(d.accepted/d.flows*100):0;
+      const allowedCls=d.hrPorts.size&&rjPct===0?'cr':acPct>70&&d.hrPorts.size?'wa':'ok';
+      html+=`<tr><td><b>${ip}</b></td><td>${ipGeoCell(ip)}</td><td>${ipOrgCell(ip)}</td>
+      <td>${d.hrPorts.size?rList:'—'}</td>
+      <td>${sp?`<span class="t ${sp>50?'cr':'wa'}">${sp}%</span>`:'—'}</td>
+      <td>${d.rejected?d.rejected.toLocaleString()+` <span class="t ${rjPct>70?'ok':rjPct>30?'wa':'cr'}">${rjPct}%</span>`:'<span class="t cr">None</span>'}</td>
+      <td>${d.accepted.toLocaleString()} <span class="t ${allowedCls}">${acPct}%</span></td>
+      <td>${d.flows.toLocaleString()}</td><td>${formatBytes(d.bytes)}</td></tr>`;
+    });
+    html+='</tbody></table></div>';
+  }
+  if(intSorted.length){
+    html+=`<h3>🏠 Internal Inbound Sources (VPC traffic)</h3>
+    <p class="sub">Traffic from private IPs within your VPC — not external threats. Useful for understanding internal communication patterns.</p>
+    <div class="tw"><table><thead><tr><th>Source IP</th><th>Flows</th><th>Bytes</th><th>Dest Ports</th></tr></thead><tbody>`;
+    intSorted.forEach(([ip,d])=>{
+      const topPorts=[...d.ports].slice(0,5).map(p=>PORTS[p]?p+'/'+PORTS[p]:p).join(', ');
+      html+=`<tr><td><b>${ip}</b> <span class="t in">VPC</span></td>
+      <td>${d.flows.toLocaleString()}</td><td>${formatBytes(d.bytes)}</td>
+      <td>${topPorts||'—'}</td></tr>`;
+    });
+    html+='</tbody></table></div>';
+  }
+  return html;
 }
 
 // === TOP OUTBOUND DESTINATION IPs ===
