@@ -99,7 +99,7 @@ tr:hover{background:var(--tag-info-bg)}
       <p>Supports default v2, custom format (v2-v7), space-delimited or CSV (Athena exports)</p>
       <input type="file" id="fileInput" accept=".txt,.log,.csv">
     </div>
-    <div class="privacy">🔒 All processing happens locally in JavaScript. GeoIP lookups use free APIs (ip-api.com batch + ipwho.is fallback). No data is stored anywhere.</div>
+    <div class="privacy">🔒 <b>Privacy:</b> Your flow log file is parsed entirely in your browser — no data is uploaded or stored. The only network call happens if you click <b>"Resolve GeoIP"</b>, which sends <u>public IP addresses only</u> (no private IPs, no traffic data, no account/ENI info) through <a href="https://corsproxy.io" target="_blank">corsproxy.io</a> (a third-party CORS proxy) to <a href="https://ip-api.com" target="_blank">ip-api.com</a> for country/org lookup. This is opt-in and can be skipped entirely. Theme preference (light/dark) is saved in localStorage.</div>
   </div>
   <div class="loading" id="loading">
     ⏳ Parsing flow log records...
@@ -108,7 +108,7 @@ tr:hover{background:var(--tag-info-bg)}
   <div id="results"></div>
 </div>
 <button class="back-to-top" id="backToTop" onclick="window.scrollTo({top:0,behavior:'smooth'})" title="Back to top">↑</button>
-<div class="footer">VPC Flow Log Analyzer — 100% client-side | <a href="https://docs.aws.amazon.com/vpc/latest/userguide/flow-log-records.html">AWS Flow Log Docs</a> | GeoIP by <a href="https://ipwho.is">ipwho.is</a></div>
+<div class="footer">VPC Flow Log Analyzer — 100% client-side | <a href="https://docs.aws.amazon.com/vpc/latest/userguide/flow-log-records.html">AWS Flow Log Docs</a> | GeoIP by <a href="https://ip-api.com">ip-api.com</a> via <a href="https://corsproxy.io">corsproxy.io</a> (opt-in only)</div>
 <script src="app.js"></script>
 </body>
 </html>
