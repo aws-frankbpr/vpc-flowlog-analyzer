@@ -423,7 +423,7 @@ function topSourceIPs(recs){
     const rList=[...d.hrPorts].map(p=>`<a href="#" onclick="filterByPort(${p});return false" class="port-chip">${p}/${HIGH_RISK_PORTS[p]||''}</a>`).join(' ');
     const rjPct=d.flows?Math.round(d.rejected/d.flows*100):0;
     const acPct=d.flows?Math.round(d.accepted/d.flows*100):0;
-    const allowedCls=d.hrPorts.size&&rjPct===0?'cr':acPct>70&&d.hrPorts.size?'wa':'ok';
+    const allowedCls=d.hrPorts.size&&d.accepted>0?'cr':'ok';
     html+=`<tr><td><b>${ip}</b></td><td>${ipGeoCell(ip)}</td><td>${ipOrgCell(ip)}</td>
     <td>${d.hrPorts.size?rList:'—'}</td>
     <td>${sp?`<span class="t ${sp>50?'cr':'wa'}">${sp}%</span>`:'—'}</td>
