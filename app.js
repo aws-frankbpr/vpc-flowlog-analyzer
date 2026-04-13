@@ -268,23 +268,26 @@ function render(){
   const eniList=[...new Set(recs.map(r=>r['interface-id']).filter(v=>v&&v!=='-'))];
   const eniOpts=eniList.map(e=>`<option value="${e}">${e}</option>`).join('');
 
+  // Pre-compute findings for summary
+  const {threats, findings}=analyzeThreats(inbound);
+
   let html=`
-  <nav class="section-nav" aria-label="Dashboard sections">
-    <a href="#sec-security">🛡️ Security</a>
-    <a href="#sec-outbound">⬆ Outbound</a>
-    <a href="#sec-activity">📊 Activity</a>
-  </nav>
-  <div class="grid">
-    <div class="s in"><div class="n">${total.toLocaleString()}</div><div class="l">Total Flows</div></div>
-    <div class="s in"><div class="n">⬇ ${inbound.length.toLocaleString()}</div><div class="l">Inbound</div></div>
-    <div class="s in"><div class="n">⬆ ${outbound.length.toLocaleString()}</div><div class="l">Outbound</div></div>
-    <div class="s ok"><div class="n">${accepted.toLocaleString()}</div><div class="l">Allowed</div></div>
-    <div class="s cr"><div class="n">${rejected.toLocaleString()}</div><div class="l">Blocked</div></div>
-    <div class="s in"><div class="n">${formatBytes(recs.reduce((s,r)=>s+r._bytes,0))}</div><div class="l">Traffic</div></div>
-  </div>
-  <div class="card" style="border-left-color:var(--accent)">
-    ${accounts.length?'<b>Account:</b> '+accounts.join(', ')+' | ':''}${vpcs.length?'<b>VPC:</b> '+vpcs.join(', ')+' | ':''}${enis.length?'<b>ENIs:</b> '+enis.join(', ')+' | ':''}Period: ${timeRange}
-  </div>
+  <div class="card" style="border-left-color:var(--accent);font-size:.85em">
+    ${accounts.length?'<b>Account:</b> '+accounts.join(', ')+' | ':''}${vpcs.length?'<b>VPC:</b> '+vpcs.join(', ')+' | ':''}${enis.length?'<b>ENIs:</b> '+enis.join(', ')+' | ':''}
+    <b>${total.toLocaleString()}</b> flows (⬇${inbound.length.toLocaleString()} ⬆${outbound.length.toLocaleString()}) |
+    ${formatBytes(recs.reduce((s,r)=>s+r._bytes,0))} | ${timeRange}
+  </div>`;
+
+  // === FINDINGS — the first thing you see ===
+  if(findings.length){
+    html+=`<div id="sec-findings">`;
+    findings.forEach(f=>{
+      html+=`<div class="card" style="border-left-color:${f.color}">${f.icon} ${f.text}</div>`;
+    });
+    html+=`</div>`;
+  }
+
+  html+=`
   <div class="filters" id="filterBar">
     <label>Action:</label><select id="fAction"><option value="all">All</option><option value="ACCEPT">Accept</option><option value="REJECT">Reject</option></select>
     <label>Protocol:</label><select id="fProto"><option value="all">All</option><option value="6">TCP</option><option value="17">UDP</option><option value="1">ICMP</option></select>
@@ -306,22 +309,22 @@ function render(){
     html+=`<div class="active-filter-banner">🔍 Filtered by: ${activeFilters.map(f=>`<span class="filter-tag">${f}</span>`).join(' ')} <a href="#" onclick="resetFilters();return false" class="clear-filters">✕ Clear all</a></div>`;
   }
 
-  // === SECTION 1: SECURITY POSTURE ===
-  html+=`<div id="sec-security">`;
-  html+=`<h2 style="color:var(--danger);font-size:1.3em;border-bottom:3px solid var(--danger)">🛡️ Security Posture</h2>`;
-  html+=topSourceIPs(inbound);
-  html+=topPorts(inbound,'dstport','Targeted Ports');
-  html+=`</div>`;
+  // === THREAT DETAILS ===
+  if(threats.length){
+    html+=`<div id="sec-threats">`;
+    html+=`<h2 style="color:var(--danger);font-size:1.3em;border-bottom:3px solid var(--danger)">🛡️ Threat Details</h2>`;
+    html+=renderThreats(threats);
+    html+=`</div>`;
+  }
 
-  // === SECTION 2: OUTBOUND ===
+  // === OUTBOUND ===
   html+=`<div id="sec-outbound">`;
   html+=`<h2 style="color:var(--warn);font-size:1.3em;border-bottom:3px solid var(--warn)">⬆ Outbound Traffic</h2>`;
   html+=topDestIPs(outbound);
   html+=`</div>`;
 
-  // === SECTION 3: ACTIVITY ===
+  // === TIMELINE ===
   html+=`<div id="sec-activity">`;
-  html+=`<h2 style="font-size:1.3em;border-bottom:3px solid var(--muted)">📊 Activity</h2>`;
   html+=timeline(recs);
   html+=`</div>`;
 
@@ -336,20 +339,18 @@ function render(){
   makeSortable();
 }
 
-// === ENI BREAKDOWN ===
-// === TOP INBOUND SOURCE IPs ===
-function topSourceIPs(recs){
-  // Detect ENI own IPs: on egress, srcaddr is the ENI's IP
+// === ANALYZE THREATS — compute findings ===
+function analyzeThreats(inboundRecs){
   const eniOwnIPs=new Set();
   allRecords.forEach(r=>{
     if(r['flow-direction']==='egress')eniOwnIPs.add(r.srcaddr);
     else if(r['flow-direction']==='ingress')eniOwnIPs.add(r.dstaddr);
   });
   const map={};
-  recs.forEach(r=>{
+  inboundRecs.forEach(r=>{
     const ip=r.srcaddr;
-    if(eniOwnIPs.has(ip))return; // skip ENI's own IPs — internal VPC traffic, not threats
-    if(!map[ip])map[ip]={bytes:0,flows:0,accepted:0,rejected:0,ports:new Set(),hrPorts:new Set(),synOnly:0,priv:isPrivate(ip)};
+    if(eniOwnIPs.has(ip))return;
+    if(!map[ip])map[ip]={bytes:0,flows:0,accepted:0,rejected:0,ports:new Set(),hrPorts:new Set(),synOnly:0};
     const d=map[ip];
     d.flows++;d.bytes+=r._bytes;
     r.action==='ACCEPT'?d.accepted++:d.rejected++;
@@ -357,58 +358,67 @@ function topSourceIPs(recs){
     if(HIGH_RISK_PORTS[r._dstport])d.hrPorts.add(r._dstport);
     if(r._tcpflags===2)d.synOnly++;
   });
-  // Separate threats from noise
+
   const allEntries=Object.entries(map);
   const threats=allEntries.filter(([,d])=>d.hrPorts.size>0||d.rejected>0||d.synOnly>0).sort((a,b)=>b[1].flows-a[1].flows);
-  const normal=allEntries.filter(([,d])=>d.hrPorts.size===0&&d.rejected===0&&d.synOnly===0).sort((a,b)=>b[1].flows-a[1].flows);
 
-  let html='';
-  if(threats.length){
-    html+=`<h3>🎯 Inbound Threats — ${threats.length} IPs (<a href="https://docs.aws.amazon.com/config/latest/developerguide/restricted-common-ports.html">AWS Config Restricted Ports</a>)</h3>
-    <p class="sub">${eniOwnIPs.size?'ENI own IPs excluded ('+[...eniOwnIPs].join(', ')+'). ':''}IPs that hit restricted ports, were blocked, or performed SYN scans.</p>
-    <div class="tw"><table><thead><tr><th>Source IP</th><th>Country</th><th>Org</th><th>Ports Targeted</th><th>SYN %</th><th>Verdict</th><th>Flows</th><th>Bytes</th></tr></thead><tbody>`;
-    threats.forEach(([ip,d])=>{
-      const sp=d.flows?Math.round(d.synOnly/d.flows*100):0;
-      const rList=[...d.hrPorts].map(p=>`<a href="#" onclick="filterByPort(${p});return false" class="port-chip">${p}/${HIGH_RISK_PORTS[p]||''}</a>`).join(' ');
-      // Port scan detection: many unique ports + SYN = scanning
-      let portsCell;
-      if(d.hrPorts.size) portsCell=rList;
-      else if(d.ports.size>10) portsCell=`<span class="t wa">Scanning ${d.ports.size} ports</span>`;
-      else portsCell='—';
-      let verdict;
-      if(d.hrPorts.size&&d.accepted>0&&d.rejected===0){
-        verdict=`<span class="t cr">⛔ ${d.accepted.toLocaleString()} allowed, none blocked</span>`;
-      }else if(d.hrPorts.size&&d.accepted>0){
-        verdict=`<span class="t cr">⚠️ ${d.accepted.toLocaleString()} allowed</span> / ${d.rejected.toLocaleString()} blocked`;
-      }else if(d.accepted>0&&d.rejected===0&&(d.synOnly>0||d.ports.size>10)){
-        verdict=`<span class="t cr">⛔ ${d.accepted.toLocaleString()} allowed, none blocked</span>`;
-      }else if(d.rejected>0&&d.accepted===0){
-        verdict=`<span class="t ok">✅ All ${d.rejected.toLocaleString()} blocked</span>`;
-      }else if(d.rejected>0&&d.accepted>0){
-        verdict=`<span class="t wa">⚠️ ${d.accepted.toLocaleString()} allowed</span> / ${d.rejected.toLocaleString()} blocked`;
-      }else{
-        verdict=`${d.accepted.toLocaleString()} allowed`;
-      }
-      html+=`<tr><td><b>${ip}</b></td><td>${ipGeoCell(ip)}</td><td>${ipOrgCell(ip)}</td>
-      <td>${portsCell}</td>
-      <td>${sp?`<span class="t ${sp>50?'cr':'wa'}">${sp}%</span>`:'—'}</td>
-      <td>${verdict}</td>
-      <td>${d.flows.toLocaleString()}</td><td>${formatBytes(d.bytes)}</td></tr>`;
-    });
-    html+='</tbody></table></div>';
+  // Generate findings
+  const findings=[];
+  const unblocked=threats.filter(([,d])=>d.hrPorts.size>0&&d.accepted>0&&d.rejected===0);
+  const partialBlocked=threats.filter(([,d])=>d.hrPorts.size>0&&d.accepted>0&&d.rejected>0);
+  const scanners=threats.filter(([,d])=>d.synOnly>0);
+  const fullyBlocked=threats.filter(([,d])=>d.rejected>0&&d.accepted===0);
+
+  if(unblocked.length){
+    const ports=[...new Set(unblocked.flatMap(([,d])=>[...d.hrPorts]))].map(p=>`${p}/${HIGH_RISK_PORTS[p]}`).join(', ');
+    findings.push({icon:'⛔',color:'var(--danger)',text:`<b>${unblocked.length} IP${unblocked.length>1?'s':''} hitting restricted ports with NO traffic blocked.</b> Ports: ${ports}. Review your Security Group rules immediately.`});
   }
-  if(normal.length){
-    const shown=normal.slice(0,10);
-    html+=`<h3>ℹ️ Other Inbound Sources — ${normal.length} IPs, no threat signals</h3>
-    <p class="sub">Normal allowed traffic — no restricted ports, no blocks, no SYN scans.</p>
-    <div class="tw"><table><thead><tr><th>Source IP</th><th>Country</th><th>Org</th><th>Flows</th><th>Bytes</th></tr></thead><tbody>`;
-    shown.forEach(([ip,d])=>{
-      html+=`<tr><td>${ip}</td><td>${ipGeoCell(ip)}</td><td>${ipOrgCell(ip)}</td>
-      <td>${d.flows.toLocaleString()}</td><td>${formatBytes(d.bytes)}</td></tr>`;
-    });
-    html+='</tbody></table></div>';
+  if(partialBlocked.length){
+    const totalAllowed=partialBlocked.reduce((s,[,d])=>s+d.accepted,0);
+    findings.push({icon:'⚠️',color:'var(--warn)',text:`<b>${partialBlocked.length} IP${partialBlocked.length>1?'s':''} hitting restricted ports — ${totalAllowed.toLocaleString()} flows allowed through.</b> SGs blocking some but not all. Review rules.`});
   }
-  return html;
+  if(scanners.length){
+    findings.push({icon:'🔍',color:'var(--accent)',text:`<b>${scanners.length} IPs performing SYN scans.</b> ${fullyBlocked.length} fully blocked, ${scanners.length-fullyBlocked.length} partially or not blocked.`});
+  }
+  if(!findings.length){
+    findings.push({icon:'✅',color:'var(--success)',text:`<b>No critical findings.</b> All inbound traffic on restricted ports is being blocked. ${threats.length} IPs were flagged and handled by your Security Groups.`});
+  }
+
+  return {threats, findings, eniOwnIPs};
+}
+
+// === RENDER THREATS TABLE ===
+function renderThreats(threats){
+  if(!threats.length)return'';
+  let html=`<div class="tw"><table><thead><tr><th>Source IP</th><th>Country</th><th>Org</th><th>Ports Targeted</th><th>SYN %</th><th>Verdict</th><th>Flows</th><th>Bytes</th></tr></thead><tbody>`;
+  threats.forEach(([ip,d])=>{
+    const sp=d.flows?Math.round(d.synOnly/d.flows*100):0;
+    const rList=[...d.hrPorts].map(p=>`<a href="#" onclick="filterByPort(${p});return false" class="port-chip">${p}/${HIGH_RISK_PORTS[p]||''}</a>`).join(' ');
+    let portsCell;
+    if(d.hrPorts.size) portsCell=rList;
+    else if(d.ports.size>10) portsCell=`<span class="t wa">Scanning ${d.ports.size} ports</span>`;
+    else portsCell='—';
+    let verdict;
+    if(d.hrPorts.size&&d.accepted>0&&d.rejected===0){
+      verdict=`<span class="t cr">⛔ ${d.accepted.toLocaleString()} allowed, none blocked</span>`;
+    }else if(d.hrPorts.size&&d.accepted>0){
+      verdict=`<span class="t cr">⚠️ ${d.accepted.toLocaleString()} allowed</span> / ${d.rejected.toLocaleString()} blocked`;
+    }else if(d.accepted>0&&d.rejected===0&&(d.synOnly>0||d.ports.size>10)){
+      verdict=`<span class="t cr">⛔ ${d.accepted.toLocaleString()} allowed, none blocked</span>`;
+    }else if(d.rejected>0&&d.accepted===0){
+      verdict=`<span class="t ok">✅ All ${d.rejected.toLocaleString()} blocked</span>`;
+    }else if(d.rejected>0&&d.accepted>0){
+      verdict=`<span class="t wa">⚠️ ${d.accepted.toLocaleString()} allowed</span> / ${d.rejected.toLocaleString()} blocked`;
+    }else{
+      verdict=`${d.accepted.toLocaleString()} allowed`;
+    }
+    html+=`<tr><td><b>${ip}</b></td><td>${ipGeoCell(ip)}</td><td>${ipOrgCell(ip)}</td>
+    <td>${portsCell}</td>
+    <td>${sp?`<span class="t ${sp>50?'cr':'wa'}">${sp}%</span>`:'—'}</td>
+    <td>${verdict}</td>
+    <td>${d.flows.toLocaleString()}</td><td>${formatBytes(d.bytes)}</td></tr>`;
+  });
+  return html+'</tbody></table></div>';
 }
 
 // === TOP OUTBOUND DESTINATION IPs ===
@@ -464,22 +474,6 @@ function topDestIPs(recs){
 
 // === GEO TABLE ===
 // === TOP PORTS ===
-function topPorts(recs,portField,title){
-  const map={};
-  recs.forEach(r=>{const p=parseInt(r[portField])||0;if(!p)return;if(!map[p])map[p]={accept:0,reject:0};r.action==='ACCEPT'?map[p].accept++:map[p].reject++;});
-  const sorted=Object.entries(map).sort((a,b)=>(b[1].accept+b[1].reject)-(a[1].accept+a[1].reject));
-  const top=sorted.slice(0,20);
-  if(!top.length)return'';
-  let html=`<h3>🔌 ${title} — Top 20 of ${sorted.length}</h3><div class="tw"><table><thead><tr><th>Port</th><th>Service</th><th>Flows</th><th>Blocked</th><th>Allowed</th></tr></thead><tbody>`;
-  top.forEach(([port,d])=>{
-    const t=d.accept+d.reject;
-    const isRestricted=!!HIGH_RISK_PORTS[port];
-    const allowedCls=isRestricted&&d.accept>0?'cr':d.accept>0?'in':'ok';
-    html+=`<tr><td><a href="#" onclick="filterByPort(${port});return false" class="port-chip-table">${port}</a></td><td>${PORTS[port]||'—'} ${isRestricted?'<span class="t cr" style="font-size:.65em">restricted</span>':''}</td><td>${t.toLocaleString()}</td><td>${d.reject?d.reject.toLocaleString():'—'}</td><td>${d.accept?`<span class="t ${allowedCls}">${d.accept.toLocaleString()}</span>`:'—'}</td></tr>`;
-  });
-  return html+'</tbody></table></div>';
-}
-
 // === TIMELINE ===
 function timeline(recs){
   const map={};
