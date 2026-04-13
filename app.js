@@ -291,6 +291,17 @@ function render(){
     <button id="resolveAllBtn" onclick="resolveAllGeo()" style="background:var(--warn)" title="Resolve country and org for top IPs using free GeoIP APIs">🌍 Resolve GeoIP</button>
   </div>`;
 
+  // Active filter banner
+  const activeFilters=[];
+  if(currentFilter.action!=='all')activeFilters.push('Action: '+currentFilter.action);
+  if(currentFilter.protocol!=='all')activeFilters.push('Protocol: '+(PROTOS[currentFilter.protocol]||currentFilter.protocol));
+  if(currentFilter.eni!=='all')activeFilters.push('ENI: '+currentFilter.eni);
+  if(currentFilter.search)activeFilters.push('IP: '+currentFilter.search);
+  if(currentFilter.port)activeFilters.push(`Port: ${currentFilter.port}/${PORTS[currentFilter.port]||''}`);
+  if(activeFilters.length){
+    html+=`<div class="active-filter-banner">🔍 Filtered by: ${activeFilters.map(f=>`<span class="filter-tag">${f}</span>`).join(' ')} <a href="#" onclick="resetFilters();return false" class="clear-filters">✕ Clear all</a></div>`;
+  }
+
   html+=`<div id="sec-eni">`;
   html+=eniTable(recs);
   html+=`</div>`;
@@ -401,11 +412,11 @@ function topSourceIPs(recs){
   <div class="tw"><table><thead><tr><th>Source IP</th><th>Country</th><th>Org</th><th>Flows</th><th>Accepted</th><th>Rejected</th><th>Bytes</th><th>Unique Ports</th><th>Restricted Ports Hit</th><th>SYN-only %</th></tr></thead><tbody>`;
   sorted.forEach(([ip,d])=>{
     const sp=d.flows?Math.round(d.synOnly/d.flows*100):0;
-    const rList=[...d.hrPorts].map(p=>`<a href="#" onclick="filterByPort(${p});return false" style="cursor:pointer;text-decoration:underline">${p}/${HIGH_RISK_PORTS[p]||''}</a>`).join(', ');
+    const rList=[...d.hrPorts].map(p=>`<a href="#" onclick="filterByPort(${p});return false" class="port-chip">${p}/${HIGH_RISK_PORTS[p]||''}</a>`).join(' ');
     html+=`<tr><td><b>${ip}</b></td><td>${ipGeoCell(ip)}</td><td>${ipOrgCell(ip)}</td>
     <td>${d.flows.toLocaleString()}</td><td>${d.accepted.toLocaleString()}</td><td>${d.rejected.toLocaleString()}</td>
     <td>${formatBytes(d.bytes)}</td><td>${d.ports.size.toLocaleString()}</td>
-    <td>${d.hrPorts.size?'<span class="t cr">'+rList+'</span>':'—'}</td>
+    <td>${d.hrPorts.size?rList:'—'}</td>
     <td>${sp?sp+'%':'—'}</td></tr>`;
   });
   return html+'</tbody></table></div>';
@@ -489,7 +500,7 @@ function topPorts(recs,portField,title){
   let html=`<h3>🔌 ${title} — Top 20 of ${sorted.length}</h3><div class="tw"><table><thead><tr><th>Port</th><th>Service</th><th>Accepted</th><th>Rejected</th><th>Total</th><th>Reject %</th></tr></thead><tbody>`;
   top.forEach(([port,d])=>{
     const t=d.accept+d.reject;const rp=t?Math.round(d.reject/t*100):0;const cls=rp>70?'cr':rp>30?'wa':'ok';
-    html+=`<tr><td><a href="#" onclick="filterByPort(${port});return false" style="font-weight:700;text-decoration:underline;color:inherit;cursor:pointer">${port}</a></td><td>${PORTS[port]||'—'}</td><td>${d.accept.toLocaleString()}</td><td>${d.reject.toLocaleString()}</td><td>${t.toLocaleString()}</td><td><span class="t ${cls}">${rp}%</span></td></tr>`;
+    html+=`<tr><td><a href="#" onclick="filterByPort(${port});return false" class="port-chip-table">${port}</a></td><td>${PORTS[port]||'—'}</td><td>${d.accept.toLocaleString()}</td><td>${d.reject.toLocaleString()}</td><td>${t.toLocaleString()}</td><td><span class="t ${cls}">${rp}%</span></td></tr>`;
   });
   return html+'</tbody></table></div>';
 }
